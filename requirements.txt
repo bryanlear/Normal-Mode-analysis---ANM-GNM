@@ -1,0 +1,10 @@
+# Pipeline dependencies
+numpy>=1.21.0
+prody>=2.0
+matplotlib>=3.4.0
+biopython>=1.79
+
+# PyRosetta — required for Rosetta mutation step
+# Install separately: pip install pyrosetta-installer
+# Then: python -c "import pyrosetta.distributed; pyrosetta.distributed.maybe_init()"
+# pyrosetta-installer
