@@ -12,7 +12,7 @@ POSITION=""
 MUTATION=""
 OUTDIR=""
 FRAGMENT=1
-AF_VERSION=4
+AF_VERSION=6
 PROTOCOL="restrained-relax"
 RADIUS=8.0
 ROUNDS=3
@@ -184,15 +184,18 @@ if [[ -z "$OUTDIR" ]]; then
     OUTDIR="results/${MUT_UPPER}${POSITION}"
 fi
 
+# ── Resolve Python interpreter (prefer conda env's python) ──
+PYTHON="${PYTHON:-python}"
+
 # ── Check Python dependencies ──
 info "Checking Python dependencies ..."
 
-python3 -c "import numpy" 2>/dev/null || die "numpy not installed. Run: pip install numpy"
-python3 -c "import prody" 2>/dev/null || die "ProDy not installed. Run: pip install prody"
-python3 -c "import matplotlib" 2>/dev/null || die "matplotlib not installed. Run: pip install matplotlib"
+"$PYTHON" -c "import numpy" 2>/dev/null || die "numpy not installed. Run: pip install numpy"
+"$PYTHON" -c "import prody" 2>/dev/null || die "ProDy not installed. Run: pip install prody"
+"$PYTHON" -c "import matplotlib" 2>/dev/null || die "matplotlib not installed. Run: pip install matplotlib"
 
 if [[ "$SKIP_ROSETTA" == "false" ]]; then
-    python3 -c "import pyrosetta" 2>/dev/null || {
+    "$PYTHON" -c "import pyrosetta" 2>/dev/null || {
         warn "PyRosetta not installed. Rosetta step will be skipped."
         warn "Install via: pip install pyrosetta-installer && python -c 'import pyrosetta.distributed; pyrosetta.distributed.maybe_init()'"
         SKIP_ROSETTA=true
@@ -224,7 +227,7 @@ echo ""
 
 # ── Build Python command ──
 PYTHON_CMD=(
-    python3 "${SCRIPT_DIR}/run_pipeline.py"
+    "$PYTHON" "${SCRIPT_DIR}/run_pipeline.py"
     --chain "$CHAIN"
     --position "$POSITION"
     --mutation "$MUTATION"

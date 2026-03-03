@@ -25,7 +25,7 @@ def run_pipeline(
     mutation: str = None,
     outdir: Path = Path("results"),
     fragment: int = 1,
-    af_version: int = 4,
+    af_version: int = 6,
     protocol: str = "restrained-relax",
     repack_radius: float = 8.0,
     repack_rounds: int = 3,

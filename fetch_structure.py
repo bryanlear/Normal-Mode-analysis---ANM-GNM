@@ -26,7 +26,7 @@ def download_alphafold_structure(
     uniprot_id: str,
     out_dir: Path,
     fragment: int = 1,
-    version: int = 4,
+    version: int = 6,
     fmt: str = "pdb",
     force: bool = False,
 ) -> Path:
@@ -65,8 +65,9 @@ def download_alphafold_structure(
 
     url_template = ALPHAFOLD_PDB_URL if fmt == "pdb" else ALPHAFOLD_CIF_URL
 
-    # Try requested version, then fall back
-    for v in [version, 4, 3, 2]:
+    # Try requested version, then descend to v2
+    versions_to_try = list(dict.fromkeys([version] + list(range(max(version, 6), 1, -1))))
+    for i, v in enumerate(versions_to_try):
         url = url_template.format(accession=accession, fragment=fragment, version=v)
         try:
             print(f"  Fetching {url} ...")
@@ -81,8 +82,9 @@ def download_alphafold_structure(
             print(f"  Saved: {local_path}")
             return local_path
         except urllib.error.HTTPError as e:
-            if e.code == 404 and v != 2:
-                print(f"  Version {v} not found, trying v{v-1} ...")
+            if e.code == 404 and i < len(versions_to_try) - 1:
+                nxt = versions_to_try[i + 1]
+                print(f"  Version {v} not found, trying v{nxt} ...")
                 continue
             raise RuntimeError(
                 f"Failed to download AlphaFold structure for {accession} "
@@ -99,7 +101,7 @@ def main():
     parser.add_argument("--uniprot", required=True, help="UniProt accession ID")
     parser.add_argument("--outdir", default=".", help="Output directory")
     parser.add_argument("--fragment", type=int, default=1, help="Fragment number (default: 1)")
-    parser.add_argument("--version", type=int, default=4, help="Model version (default: 4)")
+    parser.add_argument("--version", type=int, default=6, help="Model version (default: 6)")
     parser.add_argument("--format", choices=["pdb", "cif"], default="pdb")
     parser.add_argument("--force", action="store_true", help="Re-download even if cached")
     args = parser.parse_args()
