@@ -152,7 +152,7 @@ def fig1_msf(base, fig_dir, mutation_label, mutation_pos, n_modes=20):
         _save(fig, fig_dir, f"fig1_{tag}_msf_difference")
 
     # ── Zoomed views ──
-    ZOOM_HALF = 15
+    ZOOM_HALF = 40
     left = max(int(resnums[0]), mutation_pos - ZOOM_HALF)
     right = min(int(resnums[-1]), mutation_pos + ZOOM_HALF)
     mask = (resnums >= left) & (resnums <= right)
@@ -163,14 +163,12 @@ def fig1_msf(base, fig_dir, mutation_label, mutation_pos, n_modes=20):
         msf_mut = _load(base, "1_msf_difference", f"{tag}_msf_mut.npy")[mask]
         delta = _load(base, "1_msf_difference", f"{tag}_delta_msf.npy")[mask]
 
-        fig, axes = plt.subplots(2, 1, figsize=(6.5, 4.8), height_ratios=[1.6, 1],
+        fig, axes = plt.subplots(2, 1, figsize=(10, 5.2), height_ratios=[1.6, 1],
                                   sharex=True, gridspec_kw={"hspace": 0.08})
 
         ax = axes[0]
-        ax.plot(rn_z, msf_wt, "o-", color=C_WT, ms=4, lw=1.1, label="WT",
-                markeredgecolor="white", markeredgewidth=0.4)
-        ax.plot(rn_z, msf_mut, "s-", color=C_MUT, ms=4, lw=1.1, label=mutation_label,
-                markeredgecolor="white", markeredgewidth=0.4)
+        ax.plot(rn_z, msf_wt, "-", color=C_WT, lw=1.1, label="WT")
+        ax.plot(rn_z, msf_mut, "-", color=C_MUT, lw=1.1, label=mutation_label)
         ax.axvline(mutation_pos, color=C_SITE, ls="--", lw=0.8, alpha=0.7, zorder=0)
         ax.axvspan(mutation_pos - 0.5, mutation_pos + 0.5, color=C_SITE, alpha=0.08, zorder=0)
         ax.set_ylabel(r"$\langle \delta R_i^2 \rangle$")
@@ -180,15 +178,13 @@ def fig1_msf(base, fig_dir, mutation_label, mutation_pos, n_modes=20):
 
         ax = axes[1]
         colors = [C_POS if d >= 0 else C_NEG for d in delta]
-        ax.bar(rn_z, delta, width=0.8, color=colors, alpha=0.6,
-               edgecolor=colors, linewidth=0.4)
+        ax.bar(rn_z, delta, width=1.0, color=colors, alpha=0.6,
+               edgecolor=colors, linewidth=0.3)
         ax.axhline(0, color="k", lw=0.4, zorder=0)
         ax.axvline(mutation_pos, color=C_SITE, ls="--", lw=0.8, alpha=0.7, zorder=0)
         ax.axvspan(mutation_pos - 0.5, mutation_pos + 0.5, color=C_SITE, alpha=0.08, zorder=0)
         ax.set_xlabel("Residue number")
         ax.set_ylabel(r"$\Delta \mathrm{MSF}_i$")
-        ax.set_xticks(rn_z)
-        ax.tick_params(axis="x", rotation=45, labelsize=7)
 
         _save(fig, fig_dir, f"fig1_{tag}_msf_zoom")
 
@@ -235,12 +231,17 @@ def fig2_crosscorr(base, fig_dir, mutation_label, mutation_pos):
     fig.suptitle(f"Per-Residue Mean |ΔCC| ({mutation_label})", fontweight="bold", fontsize=10, y=1.02)
     _save(fig, fig_dir, "fig2c_mean_abs_delta_cc")
 
-    # ΔCC zoom (N-terminal region)
+    # ΔCC zoom (centred on mutation site)
+    ZOOM_HALF_CC = 22
     for tag, label in [("gnm", "GNM"), ("anm", "ANM")]:
         delta_cc = _load(base, "2_crosscorr_comparison", f"{tag}_delta_cc.npy")
-        n_zoom = min(22, len(resnums))
-        delta_zoom = delta_cc[:n_zoom, :n_zoom]
-        rn_zoom = resnums[:n_zoom]
+
+        # Find index of mutation residue and build a window around it
+        mut_idx = np.argmin(np.abs(resnums - mutation_pos))
+        lo = max(0, mut_idx - ZOOM_HALF_CC)
+        hi = min(len(resnums), mut_idx + ZOOM_HALF_CC + 1)
+        delta_zoom = delta_cc[lo:hi, lo:hi]
+        rn_zoom = resnums[lo:hi]
 
         vmax = np.percentile(np.abs(delta_zoom), 99)
         if vmax == 0:
@@ -452,6 +453,180 @@ def fig5_prs(base, fig_dir, mutation_label, mutation_pos):
 
 
 # ═════════════════════════════════════════════════════════════════════════════
+# Fig 6: Per-mode variance decomposition
+# ═════════════════════════════════════════════════════════════════════════════
+
+def _compute_per_mode_sf(analysis_dir, subdir, is_anm=False):
+    """Compute per-mode squared fluctuations from eigenvalues/eigenvectors."""
+    d = Path(analysis_dir) / subdir
+    ev_path = d / "eigenvalues.npy"
+    ec_path = d / "eigenvectors.npy"
+    if not (ev_path.exists() and ec_path.exists()):
+        # Try pre-computed per_mode_sqflucts.npy
+        pm_path = d / "per_mode_sqflucts.npy"
+        if pm_path.exists():
+            return np.load(pm_path)
+        return None
+    ev = np.load(ev_path)
+    ec = np.load(ec_path)
+    n_m = len(ev)
+    if is_anm:
+        n_r = ec.shape[0] // 3
+        per_mode_sf = np.zeros((n_m, n_r))
+        for i in range(n_m):
+            mode_vec = ec[:, i].reshape(n_r, 3)
+            per_mode_sf[i] = (mode_vec**2).sum(axis=1) / ev[i]
+    else:
+        n_r = ec.shape[0]
+        per_mode_sf = np.zeros((n_m, n_r))
+        for i in range(n_m):
+            per_mode_sf[i] = ec[:, i]**2 / ev[i]
+    return per_mode_sf
+
+
+def fig6_mode_decomposition(analysis_dir, fig_dir, mutation_label, mutation_pos, n_modes=20):
+    """Per-mode variance decomposition: global % and site % for GNM & ANM."""
+    analysis_dir = Path(analysis_dir)
+    fig_dir = Path(fig_dir)
+
+    rn_path = analysis_dir / "gnm_wt" / "resnums.npy"
+    if not rn_path.exists():
+        rn_path = analysis_dir / "anm_wt" / "resnums.npy"
+    if rn_path.exists():
+        resnums = np.load(rn_path)
+    else:
+        print("  warning: no resnums found for mode decomposition, skipping fig6")
+        return
+    site_idx = int(np.argmin(np.abs(resnums - mutation_pos)))
+
+    datasets = {}
+    for tag, subdir_wt, subdir_mut, is_anm in [
+        ("GNM", "gnm_wt", "gnm_mut", False),
+        ("ANM", "anm_wt", "anm_mut", True),
+    ]:
+        for state, subdir in [("WT", subdir_wt), ("MUT", subdir_mut)]:
+            pm = _compute_per_mode_sf(analysis_dir, subdir, is_anm)
+            if pm is None:
+                continue
+            mode_var = pm.sum(axis=1)
+            total_var = mode_var.sum()
+            pct_global = 100.0 * mode_var / total_var if total_var > 0 else np.zeros(len(mode_var))
+            sf_at_site_total = pm[:, site_idx].sum()
+            pct_site = 100.0 * pm[:, site_idx] / sf_at_site_total if sf_at_site_total > 0 else np.zeros(len(mode_var))
+            datasets[f"{tag} {state}"] = {
+                "pct_global": pct_global,
+                "pct_site": pct_site,
+                "cum_global": np.cumsum(pct_global),
+            }
+
+    if not datasets:
+        print("  warning: no per-mode data available, skipping fig6")
+        return
+
+    n_show = min(n_modes, min(len(v["pct_global"]) for v in datasets.values()))
+    modes = np.arange(1, n_show + 1)
+
+    # ── Figure 6a: Global variance % (stacked area for WT, grouped bars for WT vs MUT) ──
+    fig, axes = plt.subplots(2, 2, figsize=(11, 7.5), constrained_layout=True)
+    fig.suptitle(f"Per-Mode Variance Decomposition — {mutation_label}",
+                 fontweight="bold", fontsize=11)
+
+    bar_colors_wt = "#2166ac"
+    bar_colors_mut = "#b2182b"
+    w = 0.35
+
+    for col, model in enumerate(["GNM", "ANM"]):
+        wt_key = f"{model} WT"
+        mut_key = f"{model} MUT"
+        if wt_key not in datasets or mut_key not in datasets:
+            continue
+
+        # Top row: Global variance %
+        ax = axes[0, col]
+        ax.bar(modes - w/2, datasets[wt_key]["pct_global"][:n_show],
+               width=w, color=bar_colors_wt, alpha=0.85, label="WT",
+               edgecolor="white", lw=0.3)
+        ax.bar(modes + w/2, datasets[mut_key]["pct_global"][:n_show],
+               width=w, color=bar_colors_mut, alpha=0.85, label=mutation_label,
+               edgecolor="white", lw=0.3)
+
+        # Cumulative line (WT)
+        ax2 = ax.twinx()
+        ax2.plot(modes, datasets[wt_key]["cum_global"][:n_show],
+                 "o-", color="#555555", ms=3, lw=1, alpha=0.7, label="Cum. (WT)")
+        ax2.set_ylabel("Cumulative %", fontsize=8, color="#555555")
+        ax2.set_ylim(0, 105)
+        ax2.tick_params(labelsize=7, colors="#555555")
+        ax2.spines["right"].set_visible(True)
+        ax2.spines["right"].set_color("#999999")
+
+        ax.set_xlabel("Mode")
+        ax.set_ylabel("Global Variance (%)")
+        ax.set_xticks(modes)
+        ax.set_title(f"{model} — Global Variance per Mode", fontweight="bold", fontsize=9)
+        ax.legend(frameon=False, fontsize=7, loc="upper right")
+
+        # Bottom row: Site variance %
+        ax = axes[1, col]
+        ax.bar(modes - w/2, datasets[wt_key]["pct_site"][:n_show],
+               width=w, color=bar_colors_wt, alpha=0.85, label="WT",
+               edgecolor="white", lw=0.3)
+        ax.bar(modes + w/2, datasets[mut_key]["pct_site"][:n_show],
+               width=w, color=bar_colors_mut, alpha=0.85, label=mutation_label,
+               edgecolor="white", lw=0.3)
+
+        ax.set_xlabel("Mode")
+        ax.set_ylabel(f"Variance at Site {mutation_pos} (%)")
+        ax.set_xticks(modes)
+        ax.set_title(f"{model} — Mode Contribution at Mutation Site",
+                     fontweight="bold", fontsize=9)
+        ax.legend(frameon=False, fontsize=7, loc="upper right")
+
+    _save(fig, fig_dir, "fig6_mode_decomposition")
+
+    # ── Figure 6b: Per-mode MSF profiles near mutation site (top 3 dominant modes) ──
+    for model, is_anm in [("GNM", False), ("ANM", True)]:
+        pm_wt = _compute_per_mode_sf(analysis_dir, f"{model.lower()}_wt", is_anm)
+        pm_mut = _compute_per_mode_sf(analysis_dir, f"{model.lower()}_mut", is_anm)
+        if pm_wt is None or pm_mut is None:
+            continue
+
+        # Find top 3 contributing modes at site (WT)
+        site_contribs = pm_wt[:, site_idx]
+        top3 = np.argsort(site_contribs)[-3:][::-1]
+
+        ZOOM_HALF = 40
+        lo = max(0, site_idx - ZOOM_HALF)
+        hi = min(len(resnums), site_idx + ZOOM_HALF + 1)
+        rn_zoom = resnums[lo:hi]
+
+        fig, axes_m = plt.subplots(3, 1, figsize=(10, 7), sharex=True,
+                                    constrained_layout=True)
+        fig.suptitle(f"{model} Top-3 Dominant Modes at Site {mutation_pos} — {mutation_label}",
+                     fontweight="bold", fontsize=11)
+
+        for row, m_idx in enumerate(top3):
+            ax = axes_m[row]
+            wt_profile = pm_wt[m_idx, lo:hi]
+            mut_profile = pm_mut[m_idx, lo:hi]
+            pct_wt = 100.0 * site_contribs[m_idx] / site_contribs.sum()
+
+            ax.fill_between(rn_zoom, wt_profile, alpha=0.2, color=C_WT)
+            ax.plot(rn_zoom, wt_profile, color=C_WT, lw=1.2, label="WT")
+            ax.fill_between(rn_zoom, mut_profile, alpha=0.2, color=C_MUT)
+            ax.plot(rn_zoom, mut_profile, color=C_MUT, lw=1.2, label=mutation_label)
+            ax.axvline(mutation_pos, color=C_SITE, ls="--", lw=0.8, alpha=0.7)
+
+            ax.set_ylabel(f"SqFluct (mode {m_idx+1})")
+            ax.set_title(f"Mode {m_idx+1}  ({pct_wt:.1f}% of site variance)",
+                         fontsize=9, loc="left")
+            ax.legend(frameon=False, fontsize=7, loc="upper right")
+
+        axes_m[-1].set_xlabel("Residue")
+        _save(fig, fig_dir, f"fig6b_{model.lower()}_top3_modes_at_site")
+
+
+# ═════════════════════════════════════════════════════════════════════════════
 # Composite
 # ═════════════════════════════════════════════════════════════════════════════
 
@@ -599,6 +774,7 @@ def generate_all_plots(
     mutation_label: str,
     mutation_pos: int,
     n_modes: int = 20,
+    analysis_dir: Path = None,
 ):
     """Generate all publication-grade figures from pre-computed pattern data."""
     data_dir = Path(data_dir)
@@ -611,6 +787,13 @@ def generate_all_plots(
     fig3_overlap(data_dir, fig_dir, mutation_label, n_modes)
     fig4_hinges(data_dir, fig_dir, mutation_label, mutation_pos)
     fig5_prs(data_dir, fig_dir, mutation_label, mutation_pos)
+
+    # Per-mode decomposition (requires analysis_dir with eigenvectors)
+    if analysis_dir is not None:
+        fig6_mode_decomposition(analysis_dir, fig_dir, mutation_label, mutation_pos, n_modes)
+    else:
+        print("  skipping fig6 mode decomposition (no analysis_dir provided)")
+
     fig_composite(data_dir, fig_dir, mutation_label, mutation_pos, n_modes)
 
     n = len(list(fig_dir.glob("*.pdf")))
@@ -623,13 +806,15 @@ def main():
     parser.add_argument("--label", required=True, help="Mutation label (e.g. V13M)")
     parser.add_argument("--site", type=int, required=True, help="Mutation site (residue number)")
     parser.add_argument("--figdir", default=None, help="Figure output directory (default: datadir/figures)")
+    parser.add_argument("--analysis-dir", default=None, help="Analysis directory with eigenvalues/eigenvectors (for mode decomposition)")
     parser.add_argument("--modes", type=int, default=20)
     args = parser.parse_args()
 
     data_dir = Path(args.datadir)
     fig_dir = Path(args.figdir) if args.figdir else data_dir / "figures"
 
-    generate_all_plots(data_dir, fig_dir, args.label, args.site, args.modes)
+    generate_all_plots(data_dir, fig_dir, args.label, args.site, args.modes,
+                       analysis_dir=Path(args.analysis_dir) if args.analysis_dir else None)
     return 0
 
 

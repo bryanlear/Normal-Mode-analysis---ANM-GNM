@@ -113,6 +113,12 @@ def run_gnm(ca_atoms, label, cutoff, out_dir, n_modes=20):
     sq_flucts = prody.calcSqFlucts(gnm)
     np.save(d / "sqflucts.npy", sq_flucts)
 
+    # Per-mode squared fluctuations: sf_i(j) = eigvec_ij^2 / eigenval_i
+    per_mode_sf = np.zeros((n_modes, eigenvectors.shape[0]))
+    for i in range(n_modes):
+        per_mode_sf[i] = eigenvectors[:, i]**2 / eigenvalues[i]
+    np.save(d / "per_mode_sqflucts.npy", per_mode_sf)
+
     cross_corr = prody.calcCrossCorr(gnm)
     np.save(d / "cross_correlation.npy", cross_corr)
 
@@ -159,6 +165,14 @@ def run_anm(ca_atoms, label, cutoff, out_dir, n_modes=20):
 
     sq_flucts = prody.calcSqFlucts(anm)
     np.save(d / "sqflucts.npy", sq_flucts)
+
+    # Per-mode squared fluctuations: reshape 3N eigvec → (N,3), sum xyz
+    n_res = eigenvectors.shape[0] // 3
+    per_mode_sf = np.zeros((n_modes, n_res))
+    for i in range(n_modes):
+        mode_vec = eigenvectors[:, i].reshape(n_res, 3)
+        per_mode_sf[i] = (mode_vec**2).sum(axis=1) / eigenvalues[i]
+    np.save(d / "per_mode_sqflucts.npy", per_mode_sf)
 
     cross_corr = prody.calcCrossCorr(anm)
     np.save(d / "cross_correlation.npy", cross_corr)
@@ -238,6 +252,52 @@ def compare_fluctuations(gnm_wt, gnm_mut, anm_wt, anm_mut,
 
     site_idx = mutation_pos - int(resnums[0])
 
+    # ── Per-mode decomposition stats ──────────────────────────────────
+    mode_decomp = {}
+    for tag, model_wt, model_mut, subdir_wt, subdir_mut in [
+        ("gnm", gnm_wt, gnm_mut, "gnm_wt", "gnm_mut"),
+        ("anm", anm_wt, anm_mut, "anm_wt", "anm_mut"),
+    ]:
+        is_anm = (tag == "anm")
+        decomp_tag = {}
+        for state, model, subdir in [("wt", model_wt, subdir_wt), ("mut", model_mut, subdir_mut)]:
+            ev = model.getEigvals()
+            ec = model.getEigvecs()
+            n_m = len(ev)
+            if is_anm:
+                n_r = ec.shape[0] // 3
+                per_mode_sf = np.zeros((n_m, n_r))
+                for i in range(n_m):
+                    mode_vec = ec[:, i].reshape(n_r, 3)
+                    per_mode_sf[i] = (mode_vec**2).sum(axis=1) / ev[i]
+            else:
+                n_r = ec.shape[0]
+                per_mode_sf = np.zeros((n_m, n_r))
+                for i in range(n_m):
+                    per_mode_sf[i] = ec[:, i]**2 / ev[i]
+
+            mode_var = per_mode_sf.sum(axis=1)
+            total_var = mode_var.sum()
+            pct_global = (100.0 * mode_var / total_var).tolist() if total_var > 0 else [0.0] * n_m
+            cum_global = np.cumsum(pct_global).tolist()
+            sf_total_at_site = per_mode_sf[:, site_idx].sum()
+            pct_site = (100.0 * per_mode_sf[:, site_idx] / sf_total_at_site).tolist() if sf_total_at_site > 0 else [0.0] * n_m
+            dom_mode = int(np.argmax(per_mode_sf[:, site_idx])) + 1
+
+            # Save per-mode delta sqflucts
+            np.save(d / f"{tag}_{state}_per_mode_sqflucts.npy", per_mode_sf)
+
+            decomp_tag[state] = {
+                "pct_global": pct_global,
+                "cum_global": cum_global,
+                "pct_site": pct_site,
+                "dominant_mode_at_site": dom_mode,
+                "dominant_mode_pct": float(pct_site[dom_mode - 1]),
+                "n_modes": n_m,
+            }
+
+        mode_decomp[tag] = decomp_tag
+
     stats = {
         "mutation": mutation_label,
         "mutation_position": mutation_pos,
@@ -259,6 +319,7 @@ def compare_fluctuations(gnm_wt, gnm_mut, anm_wt, anm_mut,
             "mode_overlaps_1_10": anm_overlaps,
             "mean_mode_overlap": float(np.mean(anm_overlaps)),
         },
+        "mode_decomposition": mode_decomp,
     }
     with open(d / "comparison_summary.json", "w") as f:
         json.dump(stats, f, indent=2)

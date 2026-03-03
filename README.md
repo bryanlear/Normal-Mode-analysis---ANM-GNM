@@ -9,6 +9,7 @@ Pipeline for analyzing impact of point mutations using elastic-network models (G
 | 3 | `enm_analysis.py` | GNM + ANM: MCT cutoff scan, modes, cross-correlation, comparison |
 | 4 | `pattern_analysis.py` | 5-part analysis: MSF Δ, ΔCC, eigenvector overlap, hinges, PRS |
 | 5 | `plot_results.py` | Plot figures (12+ plots, PDF + PNG at 300 dpi) |
+| 6 | `generate_table.py` | LaTeX summary table with all key numerical statistics |
 
 ## Slow Start
 
@@ -100,6 +101,7 @@ while allowing mutation neighbourhood to adopt physically reasonable conformatio
 │   ├── fig5c_nterm_propagation.pdf/png
 │   └── fig_composite_overview.pdf/png
 ├── pipeline_results.json       Master results summary
+├── summary_table.tex           LaTeX table with all key statistics
 └── rosetta_results.json        ΔΔG and Rosetta metrics
 ```
 

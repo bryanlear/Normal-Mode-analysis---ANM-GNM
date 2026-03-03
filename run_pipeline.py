@@ -36,6 +36,7 @@ def run_pipeline(
     skip_enm: bool = False,
     skip_patterns: bool = False,
     skip_plots: bool = False,
+    skip_table: bool = False,
     verbose: bool = False,
 ):
     """Run the full mutation analysis pipeline."""
@@ -243,9 +244,32 @@ def run_pipeline(
             mutation_label=mutation_label,
             mutation_pos=position,
             n_modes=n_modes,
+            analysis_dir=enm_dir,
         )
     else:
         print(f"\nSkipping plot generation")
+
+    # ═══════════════════════════════════════════════════════════════════════
+    # STEP 6: LaTeX summary table
+    # ═══════════════════════════════════════════════════════════════════════
+    if not skip_table:
+        print("\n" + "=" * 70)
+        print("STEP 6: Generating LaTeX Summary Table")
+        print("=" * 70)
+
+        from generate_table import generate_latex_table
+        rosetta_json = outdir / "rosetta_results.json"
+        generate_latex_table(
+            analysis_dir=enm_dir,
+            pattern_dir=pattern_dir,
+            outdir=outdir,
+            rosetta_json=rosetta_json if rosetta_json.exists() else None,
+            mutation_label=mutation_label,
+            mutation_pos=position,
+            n_modes=n_modes,
+        )
+    else:
+        print(f"\nSkipping LaTeX table generation")
 
     # ═══════════════════════════════════════════════════════════════════════
     # DONE
@@ -289,6 +313,7 @@ def run_pipeline(
     print(f"    │   ├── 4_hinge_shift/")
     print(f"    │   └── 5_prs_allosteric/")
     print(f"    ├── figures/         (PDF + PNG, 300 dpi)")
+    print(f"    ├── summary_table.tex (LaTeX summary)")
     print(f"    ├── pipeline_results.json")
     print(f"    └── rosetta_results.json")
     print()
@@ -353,6 +378,7 @@ Examples:
     parser.add_argument("--skip-enm", action="store_true", help="Skip ENM analysis")
     parser.add_argument("--skip-patterns", action="store_true", help="Skip pattern analysis")
     parser.add_argument("--skip-plots", action="store_true", help="Skip figure generation")
+    parser.add_argument("--skip-table", action="store_true", help="Skip LaTeX table generation")
 
     parser.add_argument("--verbose", action="store_true", help="Verbose PyRosetta output")
 
@@ -377,6 +403,7 @@ Examples:
         skip_enm=args.skip_enm,
         skip_patterns=args.skip_patterns,
         skip_plots=args.skip_plots,
+        skip_table=args.skip_table,
         verbose=args.verbose,
     )
 

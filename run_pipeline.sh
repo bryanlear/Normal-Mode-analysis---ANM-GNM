@@ -23,6 +23,7 @@ SKIP_ROSETTA=false
 SKIP_ENM=false
 SKIP_PATTERNS=false
 SKIP_PLOTS=false
+SKIP_TABLE=false
 VERBOSE=false
 
 # ── Color output ──
@@ -156,8 +157,9 @@ while [[ $# -gt 0 ]]; do
         --skip-enm)     SKIP_ENM=true;      shift ;;
         --skip-patterns) SKIP_PATTERNS=true; shift ;;
         --skip-plots)   SKIP_PLOTS=true;    shift ;;
+        --skip-table)   SKIP_TABLE=true;    shift ;;
         --enm-only)     SKIP_FETCH=true; SKIP_ROSETTA=true; shift ;;
-        --plots-only)   SKIP_FETCH=true; SKIP_ROSETTA=true; SKIP_ENM=true; SKIP_PATTERNS=true; shift ;;
+        --plots-only)   SKIP_FETCH=true; SKIP_ROSETTA=true; SKIP_ENM=true; SKIP_PATTERNS=true; SKIP_TABLE=true; shift ;;
         --verbose)      VERBOSE=true;       shift ;;
         -h|--help)      usage ;;
         *)              die "Unknown option: $1" ;;
@@ -223,6 +225,7 @@ echo ""
 [[ "$SKIP_ENM"      == "true" ]] && echo -e "  ${YELLOW}SKIP:${NC} ENM analysis"
 [[ "$SKIP_PATTERNS" == "true" ]] && echo -e "  ${YELLOW}SKIP:${NC} Pattern analysis"
 [[ "$SKIP_PLOTS"    == "true" ]] && echo -e "  ${YELLOW}SKIP:${NC} Figure generation"
+[[ "$SKIP_TABLE"    == "true" ]] && echo -e "  ${YELLOW}SKIP:${NC} LaTeX table"
 echo ""
 
 # ── Build Python command ──
@@ -252,6 +255,7 @@ fi
 [[ "$SKIP_ENM"      == "true" ]] && PYTHON_CMD+=(--skip-enm)
 [[ "$SKIP_PATTERNS" == "true" ]] && PYTHON_CMD+=(--skip-patterns)
 [[ "$SKIP_PLOTS"    == "true" ]] && PYTHON_CMD+=(--skip-plots)
+[[ "$SKIP_TABLE"    == "true" ]] && PYTHON_CMD+=(--skip-table)
 [[ "$VERBOSE"       == "true" ]] && PYTHON_CMD+=(--verbose)
 
 # ── Run ──
