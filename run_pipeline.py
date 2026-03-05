@@ -250,6 +250,32 @@ def run_pipeline(
         print(f"\nSkipping plot generation")
 
     # ═══════════════════════════════════════════════════════════════════════
+    # STEP 5b: Deep per-mode exploration
+    # ═══════════════════════════════════════════════════════════════════════
+    explorer_dir = outdir / "mode_explorer"
+
+    if not skip_plots:
+        print("\n" + "=" * 70)
+        print("STEP 5b: Deep Per-Mode Exploration")
+        print("=" * 70)
+
+        from mode_explorer import run_mode_exploration
+        run_mode_exploration(
+            wt_pdb=wt_pdb,
+            mut_pdb=mut_pdb,
+            analysis_dir=enm_dir,
+            out_dir=explorer_dir,
+            mutation_label=mutation_label,
+            mutation_pos=position,
+            n_modes=n_modes,
+            n_top=5,
+            morph_frames=20,
+            morph_amplitude=3.0,
+        )
+    else:
+        print(f"\nSkipping mode exploration")
+
+    # ═══════════════════════════════════════════════════════════════════════
     # STEP 6: LaTeX summary table
     # ═══════════════════════════════════════════════════════════════════════
     if not skip_table:
@@ -270,6 +296,26 @@ def run_pipeline(
         )
     else:
         print(f"\nSkipping LaTeX table generation")
+
+    # ═══════════════════════════════════════════════════════════════════════
+    # STEP 7: Markdown report
+    # ═══════════════════════════════════════════════════════════════════════
+    print("\n" + "=" * 70)
+    print("STEP 7: Generating Markdown Report")
+    print("=" * 70)
+
+    from generate_report import generate_report
+    rosetta_json = outdir / "rosetta_results.json"
+    generate_report(
+        analysis_dir=enm_dir,
+        pattern_dir=pattern_dir,
+        outdir=outdir,
+        rosetta_json=rosetta_json if rosetta_json.exists() else None,
+        explorer_dir=explorer_dir,
+        mutation_label=mutation_label,
+        mutation_pos=position,
+        n_modes=n_modes,
+    )
 
     # ═══════════════════════════════════════════════════════════════════════
     # DONE
@@ -313,7 +359,11 @@ def run_pipeline(
     print(f"    │   ├── 4_hinge_shift/")
     print(f"    │   └── 5_prs_allosteric/")
     print(f"    ├── figures/         (PDF + PNG, 300 dpi)")
-    print(f"    ├── summary_table.tex (LaTeX summary)")
+    print(f"    ├── mode_explorer/   (deep per-mode analysis)")
+    print(f"    │   ├── gnm/         (rankings, MSF, orient. CC, morphs)")
+    print(f"    │   └── anm/         (+ porcupine plots)")
+    print(f"    ├── report.md            (comprehensive Markdown report)")
+    print(f"    ├── summary_table.tex    (LaTeX summary)")
     print(f"    ├── pipeline_results.json")
     print(f"    └── rosetta_results.json")
     print()

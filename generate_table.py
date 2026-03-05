@@ -682,7 +682,7 @@ def generate_latex_table(
         # Cumulative / dominant summary
         tex_lines += [
             r"\midrule",
-            f"        Cum.\ 1--{n_show}"
+            f"        Cum.\\ 1--{n_show}"
             f" & & & {_mp(pct_g_wt[:n_show] and cum_wt, n_show-1)}"
             f" & {_mp(cum_mt, n_show-1)}"
             f" & {_mp(cum_wt, n_show-1)}"
@@ -703,6 +703,74 @@ def generate_latex_table(
             r"\end{table}",
             r"",
         ]
+
+    # ══════════════════════════════════════════════════════════════════════
+    # TABLE 4 — Per-mode covariance coupling at mutation site
+    # ══════════════════════════════════════════════════════════════════════
+    for model_label, r_model in [("GNM", r2g), ("ANM", r2a)]:
+        pm_cc = r_model.get("per_mode_cc", {})
+        if not pm_cc:
+            continue
+        n_show_cc = len(pm_cc)
+        is_anm_cc = (model_label == "ANM")
+        cov_fmt = ".4f" if is_anm_cc else ".6f"
+
+        tex_lines += [
+            r"% ────────────────────────────────────────────────────────────",
+            rf"% Table 4{model_label[0]}: {model_label} per-mode coupling",
+            r"% ────────────────────────────────────────────────────────────",
+            r"\begin{table}[ht]",
+            r"\centering\footnotesize",
+            r"\caption{" + model_label
+            + r" per-mode covariance coupling at residue " + str(mutation_pos) + r". "
+            + r"Mean$\,|\mathrm{Cov}_k|$ = average absolute covariance between the mutation site and all residues via mode $k$; "
+            + r"\% = fraction of total coupling from the first " + str(n_show_cc) + r" modes; "
+            + r"$\Delta$ = MUT $-$ WT difference.}",
+            r"\begin{tabular}{l r@{\hskip 4pt}r r@{\hskip 4pt}r r}",
+            r"\toprule",
+            r"\textbf{Mode}"
+            + r" & \multicolumn{2}{c}{\textbf{Mean\,$|\mathrm{Cov}_k|$}}"
+            + r" & \multicolumn{2}{c}{\textbf{Coupling\,\%}}"
+            + r" & $\boldsymbol{\Delta}$\textbf{Cov} \\",
+            r" & \textbf{WT} & \textbf{MUT} & \textbf{WT} & \textbf{MUT} & \\",
+            r"\midrule",
+        ]
+
+        for k in range(n_show_cc):
+            m = pm_cc.get(f"mode_{k+1}", {})
+            cw = m.get("mean_abs_cov_wt")
+            cm = m.get("mean_abs_cov_mut")
+            pw = m.get("pct_cov_wt")
+            pm_v = m.get("pct_cov_mut")
+            dc = m.get("delta_mean_abs_cov")
+            tex_lines.append(
+                f"        {k+1}"
+                f" & {_f(cw, cov_fmt)} & {_f(cm, cov_fmt)}"
+                f" & {_f(pw, '.1f')} & {_f(pm_v, '.1f')}"
+                f" & {_sf(dc, '+' + cov_fmt)} \\\\"
+            )
+
+        tex_lines += [
+            r"\bottomrule",
+            r"\end{tabular}",
+            r"\end{table}",
+            r"",
+        ]
+
+    # PRS per-mode note
+    tex_lines += [
+        r"\vspace{6pt}",
+        r"\noindent\textit{Note on PRS per-mode decomposition:} "
+        r"Perturbation Response Scanning (PRS) computes the \emph{squared} response "
+        r"$\|\mathbf{H}^{-1}\mathbf{f}_j\|^2_i$, which involves cross-mode interference "
+        r"and does not factor linearly per mode. "
+        r"Per-mode PRS effectiveness and sensitivity at a site are both proportional to "
+        r"the per-mode squared fluctuation at that site (Table~3), so no additional "
+        r"per-mode PRS table is shown. "
+        r"The covariance coupling tables above (Table~4) capture the linear "
+        r"contribution of each mode to allosteric communication at the mutation site.",
+        r"",
+    ]
 
     tex_lines += [
         r"\end{document}",

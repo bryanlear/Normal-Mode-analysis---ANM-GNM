@@ -113,13 +113,94 @@ def analysis_2_crosscorr(gnm_wt, gnm_mut, anm_wt, anm_mut, resnums, mutation_pos
         site_idx = mutation_pos - int(resnums[0])
         np.save(d / f"{tag}_delta_cc_at_site.npy", delta[site_idx, :])
 
+        # ── Top-N residue pairs with largest |ΔCC| ────────────────────
+        abs_delta = np.abs(delta)
+        # Upper triangle only (avoid duplicates)
+        triu_mask = np.triu_indices_from(delta, k=1)
+        pair_vals = abs_delta[triu_mask]
+        top_pair_idx = np.argsort(pair_vals)[-10:][::-1]
+        top_pairs = []
+        for idx in top_pair_idx:
+            ri = int(resnums[triu_mask[0][idx]])
+            rj = int(resnums[triu_mask[1][idx]])
+            top_pairs.append({"res_i": ri, "res_j": rj,
+                              "delta_cc": float(delta[triu_mask[0][idx], triu_mask[1][idx]]),
+                              "abs_delta_cc": float(pair_vals[idx])})
+
+        # ── Local vs distal ΔCC stats ──────────────────────────────────
+        LOCAL_WINDOW = 20  # residues around mutation site
+        n_res = len(resnums)
+        lo = max(0, site_idx - LOCAL_WINDOW)
+        hi = min(n_res, site_idx + LOCAL_WINDOW + 1)
+        local_delta = delta[lo:hi, lo:hi]
+        distal_mask = np.ones_like(delta, dtype=bool)
+        distal_mask[lo:hi, lo:hi] = False
+        distal_delta = delta[distal_mask]
+
+        # ── Fraction of pairs exceeding thresholds ─────────────────────
+        n_pairs = len(pair_vals)
+        frac_gt_001 = float((pair_vals > 0.01).sum() / n_pairs) if n_pairs > 0 else 0.0
+        frac_gt_002 = float((pair_vals > 0.02).sum() / n_pairs) if n_pairs > 0 else 0.0
+        frac_gt_005 = float((pair_vals > 0.05).sum() / n_pairs) if n_pairs > 0 else 0.0
+
         results[tag] = {
             "delta_cc_frobenius_norm": float(np.linalg.norm(delta, "fro")),
             "delta_cc_abs_mean": float(np.abs(delta).mean()),
             "delta_cc_abs_max": float(np.abs(delta).max()),
             "mean_abs_delta_at_site": float(mean_abs_delta[site_idx]),
             "top5_coupling_changed": [int(resnums[i]) for i in np.argsort(mean_abs_delta)[-5:][::-1]],
+            "top10_pairs": top_pairs,
+            "local_delta_cc_mean": float(np.mean(np.abs(local_delta))),
+            "local_delta_cc_max": float(np.max(np.abs(local_delta))),
+            "distal_delta_cc_mean": float(np.mean(np.abs(distal_delta))),
+            "distal_delta_cc_max": float(np.max(np.abs(distal_delta))),
+            "frac_pairs_gt_0.01": frac_gt_001,
+            "frac_pairs_gt_0.02": frac_gt_002,
+            "frac_pairs_gt_0.05": frac_gt_005,
         }
+
+        # ── Per-mode covariance decomposition at mutation site ──────────
+        # For each mode k, compute the covariance contribution between the
+        # mutation site and all other residues: Cov_k(site, j) = v_k[site]·v_k[j] / λ_k
+        # Then report mean|Cov_k|, percentage of total, and WT↔MUT difference.
+        is_anm = (tag == "anm")
+        n_pm = min(10, model_wt.numModes(), model_mut.numModes())
+        per_mode_data = []
+        for k in range(n_pm):
+            if is_anm:
+                vw = model_wt[k].getEigvec().reshape(-1, 3)
+                vm = model_mut[k].getEigvec().reshape(-1, 3)
+                lw = float(model_wt[k].getEigval())
+                lm = float(model_mut[k].getEigval())
+                cov_wt_k = np.einsum('a,ja->j', vw[site_idx], vw) / lw
+                cov_mt_k = np.einsum('a,ja->j', vm[site_idx], vm) / lm
+            else:
+                vw = model_wt[k].getEigvec()
+                vm = model_mut[k].getEigvec()
+                lw = float(model_wt[k].getEigval())
+                lm = float(model_mut[k].getEigval())
+                cov_wt_k = vw[site_idx] * vw / lw
+                cov_mt_k = vm[site_idx] * vm / lm
+            per_mode_data.append({
+                "mean_abs_cov_wt": float(np.mean(np.abs(cov_wt_k))),
+                "mean_abs_cov_mut": float(np.mean(np.abs(cov_mt_k))),
+                "cov_self_wt": float(cov_wt_k[site_idx]),
+                "cov_self_mut": float(cov_mt_k[site_idx]),
+            })
+
+        tot_wt = sum(v["mean_abs_cov_wt"] for v in per_mode_data)
+        tot_mt = sum(v["mean_abs_cov_mut"] for v in per_mode_data)
+        per_mode_cc = {}
+        for k, pm in enumerate(per_mode_data):
+            pm["pct_cov_wt"] = 100 * pm["mean_abs_cov_wt"] / tot_wt if tot_wt > 0 else 0.0
+            pm["pct_cov_mut"] = 100 * pm["mean_abs_cov_mut"] / tot_mt if tot_mt > 0 else 0.0
+            pm["delta_mean_abs_cov"] = pm["mean_abs_cov_mut"] - pm["mean_abs_cov_wt"]
+            per_mode_cc[f"mode_{k+1}"] = pm
+
+        np.save(d / f"{tag}_per_mode_cov_at_site.npy",
+                np.array([[pm["mean_abs_cov_wt"], pm["mean_abs_cov_mut"]]
+                          for pm in per_mode_data]))
+        results[tag]["per_mode_cc"] = per_mode_cc
 
     np.save(d / "resnums.npy", resnums)
     with open(d / "crosscorr_summary.json", "w") as f:

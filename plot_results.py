@@ -195,7 +195,39 @@ def fig1_msf(base, fig_dir, mutation_label, mutation_pos, n_modes=20):
 
 def fig2_crosscorr(base, fig_dir, mutation_label, mutation_pos):
     resnums = _load(base, "2_crosscorr_comparison", "resnums.npy")
+    extent = [resnums[0], resnums[-1], resnums[0], resnums[-1]]
 
+    # ── Three-panel CC matrices: WT, MUT, ΔCC ──
+    for tag, label in [("gnm", "GNM"), ("anm", "ANM")]:
+        cc_wt = _load(base, "2_crosscorr_comparison", f"{tag}_cc_wt.npy")
+        cc_mut = _load(base, "2_crosscorr_comparison", f"{tag}_cc_mut.npy")
+        delta_cc = _load(base, "2_crosscorr_comparison", f"{tag}_delta_cc.npy")
+
+        fig, axes = plt.subplots(1, 3, figsize=(17, 5), constrained_layout=True)
+        fig.suptitle(f"{label} — Dynamic Cross-Correlation  ({mutation_label})",
+                     fontweight="bold", fontsize=11)
+
+        titles = ["WT", f"MUT ({mutation_label})", "ΔCC (MUT − WT)"]
+        data_list = [cc_wt, cc_mut, delta_cc]
+        for i, (data, title) in enumerate(zip(data_list, titles)):
+            ax = axes[i]
+            if i < 2:  # WT / MUT: fixed [-1, +1]
+                im = ax.imshow(data, cmap=CMAP_DIV, vmin=-1, vmax=1,
+                               origin="lower", aspect="equal", extent=extent)
+            else:      # ΔCC: symmetric around 0
+                vmax = max(np.percentile(np.abs(data), 99), 1e-6)
+                norm = TwoSlopeNorm(vmin=-vmax, vcenter=0, vmax=vmax)
+                im = ax.imshow(data, cmap=CMAP_DIV, norm=norm,
+                               origin="lower", aspect="equal", extent=extent)
+            ax.axhline(mutation_pos, color=C_SITE, lw=0.5, ls="--", alpha=0.5)
+            ax.axvline(mutation_pos, color=C_SITE, lw=0.5, ls="--", alpha=0.5)
+            fig.colorbar(im, ax=ax, shrink=0.78, pad=0.02)
+            ax.set_xlabel("Residue number")
+            ax.set_ylabel("Residue number")
+            ax.set_title(title, fontweight="bold", fontsize=9)
+        _save(fig, fig_dir, f"fig2_{tag}_cc_tripanel")
+
+    # ── Standalone ΔCC heatmaps (kept for backward compat) ──
     for tag, label in [("gnm", "GNM"), ("anm", "ANM")]:
         delta_cc = _load(base, "2_crosscorr_comparison", f"{tag}_delta_cc.npy")
         vmax = np.percentile(np.abs(delta_cc), 99)
@@ -205,7 +237,7 @@ def fig2_crosscorr(base, fig_dir, mutation_label, mutation_pos):
 
         fig, ax = plt.subplots(figsize=(5.5, 4.8))
         im = ax.imshow(delta_cc, cmap=CMAP_DIV, norm=norm, origin="lower", aspect="equal",
-                        extent=[resnums[0], resnums[-1], resnums[0], resnums[-1]])
+                        extent=extent)
         ax.axhline(mutation_pos, color=C_SITE, lw=0.5, ls="--", alpha=0.6)
         ax.axvline(mutation_pos, color=C_SITE, lw=0.5, ls="--", alpha=0.6)
         cbar = fig.colorbar(im, ax=ax, shrink=0.82, pad=0.02)
@@ -268,16 +300,16 @@ def fig2_crosscorr(base, fig_dir, mutation_label, mutation_pos):
 # ═════════════════════════════════════════════════════════════════════════════
 
 def fig3_overlap(base, fig_dir, mutation_label, n_modes=20):
-    # 3a: matrices
-    fig, axes = plt.subplots(1, 2, figsize=(8, 3.8))
-    for i, (tag, label) in enumerate([("gnm", "GNM"), ("anm", "ANM")]):
+    # ── Separate overlap matrix per model (GNM / ANM) ──
+    for tag, label in [("gnm", "GNM"), ("anm", "ANM")]:
         omat = _load(base, "3_eigenvector_overlap", f"{tag}_overlap_matrix.npy")
         nm = omat.shape[0]
-        ax = axes[i]
-        im = ax.imshow(omat, cmap="inferno", vmin=0, vmax=1, origin="lower", aspect="equal")
+
+        fig, ax = plt.subplots(figsize=(5.5, 4.8))
+        im = ax.imshow(omat, cmap="inferno", vmin=0, vmax=1,
+                       origin="lower", aspect="equal")
         ax.set_xlabel("MUT mode index")
         ax.set_ylabel("WT mode index")
-        ax.set_title(label, fontweight="bold")
         ax.set_xticks(range(0, nm, 2))
         ax.set_xticklabels(range(1, nm + 1, 2), fontsize=7)
         ax.set_yticks(range(0, nm, 2))
@@ -285,39 +317,47 @@ def fig3_overlap(base, fig_dir, mutation_label, n_modes=20):
         for k in range(nm):
             val = omat[k, k]
             color = "w" if val < 0.85 else "k"
-            ax.text(k, k, f"{val:.2f}", ha="center", va="center", fontsize=5, color=color, fontweight="bold")
-    cbar = fig.colorbar(im, ax=axes, shrink=0.85, pad=0.03)
-    cbar.set_label(r"$|\langle u_i^{\rm WT} | u_j^{\rm MUT} \rangle|$", fontsize=8)
-    fig.suptitle(f"Eigenvector Overlap Matrices ({mutation_label})", fontweight="bold", fontsize=10, y=1.02)
-    _save(fig, fig_dir, "fig3a_overlap_matrices")
+            ax.text(k, k, f"{val:.2f}", ha="center", va="center",
+                    fontsize=5, color=color, fontweight="bold")
+        cbar = fig.colorbar(im, ax=ax, shrink=0.82, pad=0.02)
+        cbar.set_label(r"$|\langle u_i^{\rm WT} | u_j^{\rm MUT} \rangle|$",
+                       fontsize=8)
+        rmsip = float(np.load(
+            Path(base) / "3_eigenvector_overlap" / f"{tag}_rmsip.npy"
+        ).item())
+        ax.set_title(
+            f"{label} — Eigenvector Overlap Matrix ({mutation_label})\n"
+            f"RMSIP(10) = {rmsip:.4f}",
+            fontweight="bold", fontsize=10, pad=10,
+        )
+        _save(fig, fig_dir, f"fig3a_{tag}_overlap_matrix")
 
-    # 3b: diagonal bar chart
-    gnm_diag = _load(base, "3_eigenvector_overlap", "gnm_mode_overlaps.npy")
-    anm_diag = _load(base, "3_eigenvector_overlap", "anm_mode_overlaps.npy")
-    nm = len(gnm_diag)
-    modes = np.arange(1, nm + 1)
+    # ── Separate diagonal-overlap bar chart per model ──
+    for tag, label in [("gnm", "GNM"), ("anm", "ANM")]:
+        diag = _load(base, "3_eigenvector_overlap", f"{tag}_mode_overlaps.npy")
+        nm = len(diag)
+        modes = np.arange(1, nm + 1)
+        rmsip = float(np.load(
+            Path(base) / "3_eigenvector_overlap" / f"{tag}_rmsip.npy"
+        ).item())
 
-    fig, ax = plt.subplots(figsize=(6, 3.2))
-    w = 0.35
-    ax.bar(modes - w / 2, gnm_diag, width=w, color=C_WT, alpha=0.85, label="GNM", edgecolor="white", lw=0.3)
-    ax.bar(modes + w / 2, anm_diag, width=w, color=C_MUT, alpha=0.85, label="ANM", edgecolor="white", lw=0.3)
-    ax.axhline(1.0, color="k", lw=0.4, ls=":", zorder=0)
-    ax.axhline(0.95, color="grey", lw=0.3, ls=":", zorder=0, alpha=0.5)
-    ax.set_xlabel("Mode index")
-    ax.set_ylabel(r"$|\langle u_i^{\rm WT} | u_i^{\rm MUT} \rangle|$")
-    ax.set_ylim(max(0, float(min(gnm_diag.min(), anm_diag.min())) - 0.05), 1.02)
-    ax.set_xticks(modes)
-    ax.legend(frameon=False)
-    ax.set_title(f"Per-Mode Diagonal Overlap ({mutation_label})", fontweight="bold", pad=8)
-
-    gnm_rmsip = float(np.load(Path(base) / "3_eigenvector_overlap" / "gnm_rmsip.npy").item())
-    anm_rmsip = float(np.load(Path(base) / "3_eigenvector_overlap" / "anm_rmsip.npy").item())
-    ax.text(0.98, 0.04,
-            f"RMSIP(10):  GNM = {gnm_rmsip:.4f}   ANM = {anm_rmsip:.4f}",
-            transform=ax.transAxes, ha="right", va="bottom",
-            fontsize=7.5, color="#333", style="italic",
-            bbox=dict(facecolor="white", edgecolor="#ccc", boxstyle="round,pad=0.3", alpha=0.9))
-    _save(fig, fig_dir, "fig3b_diagonal_overlap")
+        fig, ax = plt.subplots(figsize=(6, 3.2))
+        ax.bar(modes, diag, width=0.7, color=C_WT if tag == "gnm" else C_MUT,
+               alpha=0.85, edgecolor="white", lw=0.3)
+        ax.axhline(1.0, color="k", lw=0.4, ls=":", zorder=0)
+        ax.axhline(0.95, color="grey", lw=0.3, ls=":", zorder=0, alpha=0.5)
+        ax.set_xlabel("Mode index")
+        ax.set_ylabel(r"$|\langle u_i^{\rm WT} | u_i^{\rm MUT} \rangle|$")
+        ax.set_ylim(max(0, float(diag.min()) - 0.05), 1.02)
+        ax.set_xticks(modes)
+        ax.set_title(f"{label} — Per-Mode Diagonal Overlap ({mutation_label})",
+                     fontweight="bold", pad=8)
+        ax.text(0.98, 0.04, f"RMSIP(10) = {rmsip:.4f}",
+                transform=ax.transAxes, ha="right", va="bottom",
+                fontsize=7.5, color="#333", style="italic",
+                bbox=dict(facecolor="white", edgecolor="#ccc",
+                          boxstyle="round,pad=0.3", alpha=0.9))
+        _save(fig, fig_dir, f"fig3b_{tag}_diagonal_overlap")
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -627,141 +667,121 @@ def fig6_mode_decomposition(analysis_dir, fig_dir, mutation_label, mutation_pos,
 
 
 # ═════════════════════════════════════════════════════════════════════════════
-# Composite
+# Fig 7: Dominant mode eigenvector shapes — WT vs MUT
 # ═════════════════════════════════════════════════════════════════════════════
 
-def fig_composite(base, fig_dir, mutation_label, mutation_pos, n_modes=20):
-    resnums = _load(base, "1_msf_difference", "resnums.npy")
+def fig7_dominant_mode_shapes(analysis_dir, fig_dir, mutation_label, mutation_pos, n_modes=20):
+    """Plot full-length eigenvector profiles for dominant modes, WT vs MUT.
 
-    fig = plt.figure(figsize=(10, 12))
-    gs = gridspec.GridSpec(4, 2, figure=fig, hspace=0.38, wspace=0.35,
-                            left=0.08, right=0.95, top=0.95, bottom=0.04)
+    Produces one figure per model (GNM, ANM).  Each figure shows the top-5
+    contributing modes at the mutation site as separate subplots, with WT
+    and MUT eigenvector shapes overlaid.
+    """
+    analysis_dir = Path(analysis_dir)
+    fig_dir = Path(fig_dir)
 
-    # A: GNM ΔMSF
-    ax = fig.add_subplot(gs[0, 0])
-    delta = _load(base, "1_msf_difference", "gnm_delta_msf.npy")
-    ax.fill_between(resnums, delta, 0, where=(delta >= 0), color=C_POS, alpha=0.3, lw=0)
-    ax.fill_between(resnums, delta, 0, where=(delta < 0), color=C_NEG, alpha=0.3, lw=0)
-    ax.plot(resnums, delta, color=C_DELTA, lw=0.7)
-    ax.axhline(0, color="k", lw=0.3)
-    ax.axvline(mutation_pos, color=C_SITE, ls="--", lw=0.6, alpha=0.6)
-    ax.set_ylabel(r"$\Delta \mathrm{MSF}_i$  (GNM)")
-    ax.set_xlabel("Residue")
-    ax.set_title("A  GNM MSF Difference", fontweight="bold", loc="left", fontsize=9)
+    rn_path = analysis_dir / "gnm_wt" / "resnums.npy"
+    if not rn_path.exists():
+        rn_path = analysis_dir / "anm_wt" / "resnums.npy"
+    if not rn_path.exists():
+        print("  warning: no resnums found, skipping fig7")
+        return
+    resnums = np.load(rn_path)
+    site_idx = int(np.argmin(np.abs(resnums - mutation_pos)))
 
-    # B: ANM ΔMSF
-    ax = fig.add_subplot(gs[0, 1])
-    delta = _load(base, "1_msf_difference", "anm_delta_msf.npy")
-    ax.fill_between(resnums, delta, 0, where=(delta >= 0), color=C_POS, alpha=0.3, lw=0)
-    ax.fill_between(resnums, delta, 0, where=(delta < 0), color=C_NEG, alpha=0.3, lw=0)
-    ax.plot(resnums, delta, color=C_DELTA, lw=0.7)
-    ax.axhline(0, color="k", lw=0.3)
-    ax.axvline(mutation_pos, color=C_SITE, ls="--", lw=0.6, alpha=0.6)
-    ax.set_ylabel(r"$\Delta \mathrm{MSF}_i$  (ANM)")
-    ax.set_xlabel("Residue")
-    ax.set_title("B  ANM MSF Difference", fontweight="bold", loc="left", fontsize=9)
+    for model, is_anm in [("GNM", False), ("ANM", True)]:
+        wt_dir = analysis_dir / f"{model.lower()}_wt"
+        mut_dir = analysis_dir / f"{model.lower()}_mut"
 
-    # C: ΔCC heatmap (GNM)
-    ax = fig.add_subplot(gs[1, 0])
-    delta_cc = _load(base, "2_crosscorr_comparison", "gnm_delta_cc.npy")
-    vmax = np.percentile(np.abs(delta_cc), 99)
-    if vmax == 0:
-        vmax = 1e-6
-    norm = TwoSlopeNorm(vmin=-vmax, vcenter=0, vmax=vmax)
-    im = ax.imshow(delta_cc, cmap=CMAP_DIV, norm=norm, origin="lower", aspect="equal",
-                    extent=[resnums[0], resnums[-1], resnums[0], resnums[-1]])
-    ax.axhline(mutation_pos, color=C_SITE, lw=0.4, ls="--", alpha=0.5)
-    ax.axvline(mutation_pos, color=C_SITE, lw=0.4, ls="--", alpha=0.5)
-    fig.colorbar(im, ax=ax, shrink=0.8, pad=0.02).ax.tick_params(labelsize=6)
-    ax.set_xlabel("Residue")
-    ax.set_ylabel("Residue")
-    ax.set_title("C  GNM ΔCross-Correlation", fontweight="bold", loc="left", fontsize=9)
+        ev_wt_path = wt_dir / "eigenvectors.npy"
+        ev_mut_path = mut_dir / "eigenvectors.npy"
+        lam_wt_path = wt_dir / "eigenvalues.npy"
+        lam_mut_path = mut_dir / "eigenvalues.npy"
 
-    # D: Overlap bar chart
-    ax = fig.add_subplot(gs[1, 1])
-    gnm_diag = _load(base, "3_eigenvector_overlap", "gnm_mode_overlaps.npy")
-    anm_diag = _load(base, "3_eigenvector_overlap", "anm_mode_overlaps.npy")
-    nm = len(gnm_diag)
-    modes = np.arange(1, nm + 1)
-    w = 0.35
-    ax.bar(modes - w / 2, gnm_diag, width=w, color=C_WT, alpha=0.85, label="GNM", edgecolor="white", lw=0.3)
-    ax.bar(modes + w / 2, anm_diag, width=w, color=C_MUT, alpha=0.85, label="ANM", edgecolor="white", lw=0.3)
-    ax.axhline(1.0, color="k", lw=0.3, ls=":")
-    ax.set_ylim(max(0, float(min(gnm_diag.min(), anm_diag.min())) - 0.05), 1.02)
-    ax.set_xlabel("Mode")
-    ax.set_ylabel("Overlap")
-    ax.set_xticks(modes[::2])
-    ax.legend(frameon=False, fontsize=7)
-    ax.set_title("D  Eigenvector Overlap", fontweight="bold", loc="left", fontsize=9)
+        if not all(p.exists() for p in [ev_wt_path, ev_mut_path, lam_wt_path, lam_mut_path]):
+            print(f"  warning: missing eigenvector/eigenvalue files for {model}, skipping")
+            continue
 
-    # E: Hinges (modes 1, 3, 5)
-    gs_e = gs[2, 0].subgridspec(3, 1, hspace=0.15)
-    for row, k in enumerate([0, 2, 4]):
-        ax = fig.add_subplot(gs_e[row])
-        mode_label = f"mode_{k+1}"
-        ev_wt = _load(base, "4_hinge_shift", f"wt_{mode_label}_eigvec.npy")
-        ev_mut = _load(base, "4_hinge_shift", f"mut_{mode_label}_eigvec.npy")
-        rn_h = _load(base, "4_hinge_shift", "resnums.npy")
-        ax.plot(rn_h, ev_wt, color=C_WT, lw=0.8, alpha=0.8)
-        ax.plot(rn_h, ev_mut, color=C_MUT, lw=0.8, alpha=0.8)
-        ax.axhline(0, color="k", lw=0.2)
-        ax.axvline(mutation_pos, color=C_SITE, ls="--", lw=0.5, alpha=0.5)
-        ax.set_ylabel(f"m{k+1}", fontsize=7, rotation=0, labelpad=12)
-        ax.tick_params(labelsize=6)
-        if row < 2:
-            ax.set_xticklabels([])
+        ec_wt = np.load(ev_wt_path)
+        ec_mut = np.load(ev_mut_path)
+        lam_wt = np.load(lam_wt_path)
+        lam_mut = np.load(lam_mut_path)
+
+        # Compute per-mode squared-fluctuation at site to rank modes
+        n_m = len(lam_wt)
+        if is_anm:
+            n_r = ec_wt.shape[0] // 3
+            sf_site_wt = np.array([
+                (ec_wt[:, k].reshape(n_r, 3)[site_idx]**2).sum() / lam_wt[k]
+                for k in range(n_m)
+            ])
         else:
-            ax.set_xlabel("Residue", fontsize=7)
-    fig.text(gs[2, 0].get_position(fig).x0 + 0.005,
-             gs[2, 0].get_position(fig).y1 + 0.005,
-             "E  Hinge Eigenvectors (modes 1, 3, 5)",
-             fontweight="bold", fontsize=9, transform=fig.transFigure)
+            n_r = ec_wt.shape[0]
+            sf_site_wt = np.array([
+                ec_wt[site_idx, k]**2 / lam_wt[k]
+                for k in range(n_m)
+            ])
 
-    # F: ΔPRS heatmap
-    ax = fig.add_subplot(gs[2, 1])
-    delta_prs = _load(base, "5_prs_allosteric", "delta_prs_matrix.npy")
-    vmax = np.percentile(np.abs(delta_prs), 99)
-    if vmax == 0:
-        vmax = 1e-6
-    norm = TwoSlopeNorm(vmin=-vmax, vcenter=0, vmax=vmax)
-    im = ax.imshow(delta_prs, cmap=CMAP_DIV, norm=norm, origin="lower", aspect="equal",
-                    extent=[resnums[0], resnums[-1], resnums[0], resnums[-1]])
-    ax.axhline(mutation_pos, color=C_SITE, lw=0.4, ls="--", alpha=0.5)
-    ax.axvline(mutation_pos, color=C_SITE, lw=0.4, ls="--", alpha=0.5)
-    fig.colorbar(im, ax=ax, shrink=0.8, pad=0.02).ax.tick_params(labelsize=6)
-    ax.set_xlabel("Responding residue")
-    ax.set_ylabel("Perturbed residue")
-    ax.set_title("F  ΔPRS Matrix", fontweight="bold", loc="left", fontsize=9)
+        total_sf_site = sf_site_wt.sum()
+        top_k = min(5, n_m)
+        top_modes = np.argsort(sf_site_wt)[-top_k:][::-1]
 
-    # G: N-terminal propagation
-    ax = fig.add_subplot(gs[3, 0])
-    nterm_wt = _load(base, "5_prs_allosteric", "nterm_propagation_wt.npy")
-    nterm_mut = _load(base, "5_prs_allosteric", "nterm_propagation_mut.npy")
-    rn_p = _load(base, "5_prs_allosteric", "resnums.npy")
-    ax.plot(rn_p, nterm_wt, color=C_WT, lw=0.9, alpha=0.85, label="WT")
-    ax.plot(rn_p, nterm_mut, color=C_MUT, lw=0.9, alpha=0.85, label=mutation_label)
-    ax.axvline(mutation_pos, color=C_SITE, ls="--", lw=0.6, alpha=0.6)
-    ax.set_xlabel("Residue")
-    ax.set_ylabel("PRS response")
-    ax.legend(frameon=False, fontsize=7)
-    ax.set_title("G  N-Term Signal Propagation", fontweight="bold", loc="left", fontsize=9)
+        fig, axes = plt.subplots(top_k, 1, figsize=(10, 2.2 * top_k),
+                                  sharex=True, constrained_layout=True)
+        if top_k == 1:
+            axes = [axes]
 
-    # H: ΔPRS profiles
-    ax = fig.add_subplot(gs[3, 1])
-    delta_eff = _load(base, "5_prs_allosteric", "delta_effectiveness.npy")
-    delta_sen = _load(base, "5_prs_allosteric", "delta_sensitivity.npy")
-    ax.plot(rn_p, delta_eff, color=C_WT, lw=0.9, alpha=0.85, label="ΔEffectiveness")
-    ax.plot(rn_p, delta_sen, color=C_MUT, lw=0.9, alpha=0.85, label="ΔSensitivity")
-    ax.axhline(0, color="k", lw=0.3)
-    ax.axvline(mutation_pos, color=C_SITE, ls="--", lw=0.6, alpha=0.6)
-    ax.set_xlabel("Residue")
-    ax.set_ylabel("Δ PRS metric")
-    ax.legend(frameon=False, fontsize=7)
-    ax.set_title("H  ΔPRS Profiles", fontweight="bold", loc="left", fontsize=9)
+        fig.suptitle(
+            f"{model} Dominant-Mode Eigenvectors — WT vs {mutation_label}\n"
+            f"(ranked by contribution at site {mutation_pos})",
+            fontweight="bold", fontsize=11,
+        )
 
-    fig.suptitle(f"ENM Pattern Analysis — {mutation_label}",
-                  fontweight="bold", fontsize=11, y=0.98)
-    _save(fig, fig_dir, "fig_composite_overview")
+        for row, m_idx in enumerate(top_modes):
+            ax = axes[row]
+
+            if is_anm:
+                # For ANM, plot the magnitude of the 3D displacement vector
+                vec_wt = ec_wt[:, m_idx].reshape(n_r, 3)
+                vec_mut = ec_mut[:, m_idx].reshape(n_r, 3)
+                mag_wt = np.sqrt((vec_wt**2).sum(axis=1))
+                mag_mut = np.sqrt((vec_mut**2).sum(axis=1))
+
+                ax.fill_between(resnums, mag_wt, alpha=0.15, color=C_WT)
+                ax.plot(resnums, mag_wt, color=C_WT, lw=1.0, alpha=0.9, label="WT")
+                ax.fill_between(resnums, mag_mut, alpha=0.15, color=C_MUT)
+                ax.plot(resnums, mag_mut, color=C_MUT, lw=1.0, alpha=0.9, label=mutation_label)
+                ylabel = "Displacement |u|"
+            else:
+                # For GNM, plot the signed eigenvector component
+                vec_wt = ec_wt[:, m_idx]
+                vec_mut = ec_mut[:, m_idx]
+
+                # Align sign: ensure dot product is positive so they overlay correctly
+                if np.dot(vec_wt, vec_mut) < 0:
+                    vec_mut = -vec_mut
+
+                ax.fill_between(resnums, vec_wt, alpha=0.15, color=C_WT)
+                ax.plot(resnums, vec_wt, color=C_WT, lw=1.0, alpha=0.9, label="WT")
+                ax.fill_between(resnums, vec_mut, alpha=0.15, color=C_MUT)
+                ax.plot(resnums, vec_mut, color=C_MUT, lw=1.0, alpha=0.9, label=mutation_label)
+                ax.axhline(0, color="k", lw=0.3, zorder=0)
+                ylabel = "Eigenvector"
+
+            ax.axvline(mutation_pos, color=C_SITE, ls="--", lw=0.8, alpha=0.7, zorder=0)
+
+            pct = 100.0 * sf_site_wt[m_idx] / total_sf_site if total_sf_site > 0 else 0
+            ax.set_ylabel(ylabel, fontsize=8)
+            ax.set_title(
+                f"Mode {m_idx + 1}  —  {pct:.1f}% of site variance  "
+                f"(λ = {lam_wt[m_idx]:.6f})",
+                fontsize=9, loc="left", fontweight="bold",
+            )
+            if row == 0:
+                ax.legend(frameon=False, fontsize=7, loc="upper right")
+
+        axes[-1].set_xlabel("Residue number")
+        _save(fig, fig_dir, f"fig7_{model.lower()}_dominant_modes")
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -791,10 +811,9 @@ def generate_all_plots(
     # Per-mode decomposition (requires analysis_dir with eigenvectors)
     if analysis_dir is not None:
         fig6_mode_decomposition(analysis_dir, fig_dir, mutation_label, mutation_pos, n_modes)
+        fig7_dominant_mode_shapes(analysis_dir, fig_dir, mutation_label, mutation_pos, n_modes)
     else:
-        print("  skipping fig6 mode decomposition (no analysis_dir provided)")
-
-    fig_composite(data_dir, fig_dir, mutation_label, mutation_pos, n_modes)
+        print("  skipping fig6/fig7 mode decomposition (no analysis_dir provided)")
 
     n = len(list(fig_dir.glob("*.pdf")))
     print(f"\nDone — {n} figures saved (PDF + PNG) in {fig_dir}")
