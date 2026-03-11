@@ -36,6 +36,7 @@ def run_pipeline(
     skip_enm: bool = False,
     skip_patterns: bool = False,
     skip_plots: bool = False,
+    skip_dccm: bool = False,
     skip_table: bool = False,
     verbose: bool = False,
 ):
@@ -250,7 +251,7 @@ def run_pipeline(
         print(f"\nSkipping plot generation")
 
     # ═══════════════════════════════════════════════════════════════════════
-    # STEP 5b: Deep per-mode exploration
+    # STEP 5b: Deep per-mode exploration (with rigid-body exclusion + mode matching)
     # ═══════════════════════════════════════════════════════════════════════
     explorer_dir = outdir / "mode_explorer"
 
@@ -260,7 +261,7 @@ def run_pipeline(
         print("=" * 70)
 
         from mode_explorer import run_mode_exploration
-        run_mode_exploration(
+        explorer_result = run_mode_exploration(
             wt_pdb=wt_pdb,
             mut_pdb=mut_pdb,
             analysis_dir=enm_dir,
@@ -272,8 +273,32 @@ def run_pipeline(
             morph_frames=20,
             morph_amplitude=3.0,
         )
+        if "anm" in explorer_result and "n_rigid_body_modes" in explorer_result["anm"]:
+            pipeline_results["anm_rigid_body_modes"] = explorer_result["anm"]["n_rigid_body_modes"]
     else:
         print(f"\nSkipping mode exploration")
+
+    # ═══════════════════════════════════════════════════════════════════════
+    # STEP 5c: DCCM analysis (rigid-body excluded ANM cross-correlations)
+    # ═══════════════════════════════════════════════════════════════════════
+    dccm_dir = outdir / "dccm"
+
+    if not skip_dccm:
+        print("\n" + "=" * 70)
+        print("STEP 5c: Dynamic Cross-Correlation Maps (DCCM)")
+        print("=" * 70)
+
+        from dccm_analysis import run_dccm_analysis
+        dccm_result = run_dccm_analysis(
+            analysis_dir=enm_dir,
+            out_dir=dccm_dir,
+            fig_dir=fig_dir,
+            mutation_label=mutation_label,
+            mutation_pos=position,
+        )
+        pipeline_results["dccm"] = dccm_result
+    else:
+        print(f"\nSkipping DCCM analysis")
 
     # ═══════════════════════════════════════════════════════════════════════
     # STEP 6: LaTeX summary table
@@ -361,7 +386,8 @@ def run_pipeline(
     print(f"    ├── figures/         (PDF + PNG, 300 dpi)")
     print(f"    ├── mode_explorer/   (deep per-mode analysis)")
     print(f"    │   ├── gnm/         (rankings, MSF, orient. CC, morphs)")
-    print(f"    │   └── anm/         (+ porcupine plots)")
+    print(f"    │   └── anm/         (+ porcupine side-by-side)")
+    print(f"    ├── dccm/            (dynamic cross-correlation maps)")
     print(f"    ├── report.md            (comprehensive Markdown report)")
     print(f"    ├── summary_table.tex    (LaTeX summary)")
     print(f"    ├── pipeline_results.json")
@@ -428,6 +454,7 @@ Examples:
     parser.add_argument("--skip-enm", action="store_true", help="Skip ENM analysis")
     parser.add_argument("--skip-patterns", action="store_true", help="Skip pattern analysis")
     parser.add_argument("--skip-plots", action="store_true", help="Skip figure generation")
+    parser.add_argument("--skip-dccm", action="store_true", help="Skip DCCM analysis")
     parser.add_argument("--skip-table", action="store_true", help="Skip LaTeX table generation")
 
     parser.add_argument("--verbose", action="store_true", help="Verbose PyRosetta output")
@@ -453,6 +480,7 @@ Examples:
         skip_enm=args.skip_enm,
         skip_patterns=args.skip_patterns,
         skip_plots=args.skip_plots,
+        skip_dccm=args.skip_dccm,
         skip_table=args.skip_table,
         verbose=args.verbose,
     )

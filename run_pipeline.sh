@@ -23,6 +23,7 @@ SKIP_ROSETTA=false
 SKIP_ENM=false
 SKIP_PATTERNS=false
 SKIP_PLOTS=false
+SKIP_DCCM=false
 SKIP_TABLE=false
 VERBOSE=false
 
@@ -73,6 +74,7 @@ ${CYAN}SKIP FLAGS${NC}
     --skip-enm              Skip GNM + ANM analysis
     --skip-patterns         Skip 5-part pattern analysis
     --skip-plots            Skip figure generation
+    --skip-dccm             Skip DCCM analysis
     --enm-only              Only run ENM + patterns + plots (skip fetch + rosetta)
     --plots-only            Only regenerate figures
 
@@ -157,6 +159,7 @@ while [[ $# -gt 0 ]]; do
         --skip-enm)     SKIP_ENM=true;      shift ;;
         --skip-patterns) SKIP_PATTERNS=true; shift ;;
         --skip-plots)   SKIP_PLOTS=true;    shift ;;
+        --skip-dccm)    SKIP_DCCM=true;     shift ;;
         --skip-table)   SKIP_TABLE=true;    shift ;;
         --enm-only)     SKIP_FETCH=true; SKIP_ROSETTA=true; shift ;;
         --plots-only)   SKIP_FETCH=true; SKIP_ROSETTA=true; SKIP_ENM=true; SKIP_PATTERNS=true; SKIP_TABLE=true; shift ;;
@@ -225,6 +228,7 @@ echo ""
 [[ "$SKIP_ENM"      == "true" ]] && echo -e "  ${YELLOW}SKIP:${NC} ENM analysis"
 [[ "$SKIP_PATTERNS" == "true" ]] && echo -e "  ${YELLOW}SKIP:${NC} Pattern analysis"
 [[ "$SKIP_PLOTS"    == "true" ]] && echo -e "  ${YELLOW}SKIP:${NC} Figure generation"
+[[ "$SKIP_DCCM"     == "true" ]] && echo -e "  ${YELLOW}SKIP:${NC} DCCM analysis"
 [[ "$SKIP_TABLE"    == "true" ]] && echo -e "  ${YELLOW}SKIP:${NC} LaTeX table"
 echo ""
 
@@ -255,6 +259,7 @@ fi
 [[ "$SKIP_ENM"      == "true" ]] && PYTHON_CMD+=(--skip-enm)
 [[ "$SKIP_PATTERNS" == "true" ]] && PYTHON_CMD+=(--skip-patterns)
 [[ "$SKIP_PLOTS"    == "true" ]] && PYTHON_CMD+=(--skip-plots)
+[[ "$SKIP_DCCM"     == "true" ]] && PYTHON_CMD+=(--skip-dccm)
 [[ "$SKIP_TABLE"    == "true" ]] && PYTHON_CMD+=(--skip-table)
 [[ "$VERBOSE"       == "true" ]] && PYTHON_CMD+=(--verbose)
 

@@ -17,6 +17,10 @@ import prody
 from prody import ANM, GNM
 
 
+# B-factor conversion constant: B_i = BFACTOR_SCALE * <Δr_i²>
+BFACTOR_SCALE = 8.0 * np.pi ** 2 / 3.0  # ≈ 26.3189
+
+
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
 def ensure_dir(d: Path) -> Path:
@@ -128,6 +132,10 @@ def run_gnm(ca_atoms, label, cutoff, out_dir, n_modes=20):
     resnums = ca_atoms.getResnums()
     np.save(d / "resnums.npy", resnums)
 
+    # Compute B-factors from squared fluctuations
+    bfactors = BFACTOR_SCALE * sq_flucts
+    np.save(d / "bfactors.npy", bfactors)
+
     summary = {
         "label": label,
         "model": "GNM",
@@ -143,6 +151,42 @@ def run_gnm(ca_atoms, label, cutoff, out_dir, n_modes=20):
 
     print(f"  GNM [{label}] done: {n_modes} modes, cutoff={cutoff} Å")
     return gnm, summary
+
+
+# ── Rigid-body mode detection ────────────────────────────────────────────────
+
+def detect_rigid_body_modes(eigenvalues, gap_factor=10.0):
+    """Detect near-zero rigid-body modes in ANM eigenvalues.
+
+    Finds the boundary between rigid-body modes (near-zero eigenvalues) and
+    the first internal mode by looking for a large eigenvalue ratio gap.
+
+    Returns the number of rigid-body modes (typically 5 or 6 for ANM).
+    """
+    n = len(eigenvalues)
+    if n < 2:
+        return 0
+
+    # Method: find the largest ratio gap in the first 8 eigenvalues
+    search_limit = min(8, n - 1)
+    best_gap_idx = 0
+    best_ratio = 1.0
+
+    for i in range(search_limit):
+        if eigenvalues[i] > 0:
+            ratio = eigenvalues[i + 1] / eigenvalues[i]
+            if ratio > best_ratio:
+                best_ratio = ratio
+                best_gap_idx = i
+
+    # The gap must be substantial (at least gap_factor fold)
+    if best_ratio >= gap_factor:
+        n_rigid = best_gap_idx + 1
+    else:
+        # Fallback: count eigenvalues < 1e-4
+        n_rigid = int((eigenvalues[:search_limit + 1] < 1e-4).sum())
+
+    return n_rigid
 
 
 # ── ANM ──────────────────────────────────────────────────────────────────────
@@ -183,12 +227,22 @@ def run_anm(ca_atoms, label, cutoff, out_dir, n_modes=20):
     resnums = ca_atoms.getResnums()
     np.save(d / "resnums.npy", resnums)
 
+    # Detect rigid-body modes
+    n_rigid = detect_rigid_body_modes(eigenvalues)
+
+    # Compute B-factors from squared fluctuations
+    bfactors = BFACTOR_SCALE * sq_flucts
+    np.save(d / "bfactors.npy", bfactors)
+
     summary = {
         "label": label,
         "model": "ANM",
         "cutoff_A": cutoff,
         "n_residues": int(ca_atoms.numAtoms()),
         "n_modes_computed": n_modes,
+        "n_rigid_body_modes": n_rigid,
+        "first_internal_mode_index": n_rigid,
+        "n_internal_modes": n_modes - n_rigid,
         "eigenvalues": eigenvalues.tolist(),
         "sq_flucts_mean": float(sq_flucts.mean()),
         "sq_flucts_std": float(sq_flucts.std()),
@@ -196,7 +250,8 @@ def run_anm(ca_atoms, label, cutoff, out_dir, n_modes=20):
     with open(d / "anm_summary.json", "w") as f:
         json.dump(summary, f, indent=2)
 
-    print(f"  ANM [{label}] done: {n_modes} modes, cutoff={cutoff} Å")
+    print(f"  ANM [{label}] done: {n_modes} modes, cutoff={cutoff} Å, "
+          f"{n_rigid} rigid-body modes detected")
     return anm, summary
 
 

@@ -20,7 +20,9 @@ from pathlib import Path
 import numpy as np
 import matplotlib as mpl
 import matplotlib.pyplot as plt
-from matplotlib.colors import TwoSlopeNorm
+from matplotlib.colors import TwoSlopeNorm, Normalize
+
+from enm_analysis import detect_rigid_body_modes
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -84,6 +86,107 @@ def _load_enm(analysis_dir, model, state):
         "coords": np.load(d / "ca_coords.npy"),
         "resnums": np.load(d / "resnums.npy"),
     }
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# Internal-mode extraction (rigid-body removal)
+# ═════════════════════════════════════════════════════════════════════════════
+
+def extract_internal_modes(data, n_skip=None, n_keep=15, is_anm=True):
+    """Strip rigid-body modes from ANM data, return internal eigenvalues/eigenvectors.
+
+    For GNM, n_skip=0 (ProDy already excludes the trivial mode).
+    For ANM, auto-detects rigid-body modes if n_skip is None.
+    """
+    if not is_anm:
+        n_skip = 0
+    elif n_skip is None:
+        n_skip = detect_rigid_body_modes(data["eigenvalues"])
+
+    n_total = data["eigenvalues"].shape[0]
+    n_keep = min(n_keep, n_total - n_skip)
+    return {
+        "eigenvalues": data["eigenvalues"][n_skip:n_skip + n_keep],
+        "eigenvectors": data["eigenvectors"][:, n_skip:n_skip + n_keep],
+        "coords": data["coords"],
+        "resnums": data["resnums"],
+        "n_rigid": n_skip,
+    }
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# Mode matching via absolute cosine overlap
+# ═════════════════════════════════════════════════════════════════════════════
+
+def compute_overlap_matrix(evecs_a, evecs_b):
+    """Return |dot(u_i, v_j)| matrix. Both sets are unit-normalised."""
+    return np.abs(evecs_a.T @ evecs_b)
+
+
+def match_modes(evecs_wt, evecs_mut, n_match=3):
+    """For WT internal modes 0..(n_match-1), find best-matching MUT mode
+    via greedy absolute cosine overlap (no reuse).
+
+    Returns list of (wt_idx, mut_idx, overlap_value) and the full overlap matrix.
+    """
+    overlap = compute_overlap_matrix(evecs_wt, evecs_mut)
+    matched = []
+    used_mut = set()
+    for wt_idx in range(min(n_match, overlap.shape[0])):
+        row = overlap[wt_idx].copy()
+        for u in used_mut:
+            row[u] = -1.0
+        mut_idx = int(np.argmax(row))
+        matched.append((wt_idx, mut_idx, float(row[mut_idx])))
+        used_mut.add(mut_idx)
+    return matched, overlap
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# Quantitative descriptors
+# ═════════════════════════════════════════════════════════════════════════════
+
+def calc_collectivity(disp):
+    """Shannon-entropy-based collectivity κ ∈ (0, 1].
+    κ = (1/N) exp(-Σ p_i ln p_i) where p_i = |d_i|² / Σ|d_j|².
+    """
+    if disp.ndim == 1:
+        mag2 = disp ** 2
+    else:
+        mag2 = (disp ** 2).sum(axis=1)
+    total = mag2.sum()
+    if total == 0:
+        return 0.0
+    p = mag2 / total
+    p = p[p > 0]
+    entropy = -np.sum(p * np.log(p))
+    return float(np.exp(entropy) / len(mag2))
+
+
+def find_hinge_residues(disp, resnums, threshold_frac=0.15):
+    """Residues with displacement magnitude < threshold_frac * max."""
+    if disp.ndim == 1:
+        mag = np.abs(disp)
+    else:
+        mag = np.linalg.norm(disp, axis=1)
+    cutoff = threshold_frac * mag.max() if mag.max() > 0 else 0
+    return resnums[mag < cutoff].tolist()
+
+
+def mode_displacement(eigvec_col, n_res, is_anm=True):
+    """Extract per-residue displacement from an eigenvector column.
+    ANM: reshape (3N,) → (N, 3). GNM: returns (N,) as-is.
+    """
+    if is_anm:
+        return eigvec_col.reshape(n_res, 3)
+    return eigvec_col
+
+
+def rms_displacement(disp):
+    """RMS of per-residue displacement magnitudes."""
+    if disp.ndim == 1:
+        return float(np.sqrt(np.mean(disp ** 2)))
+    return float(np.sqrt(np.mean(np.sum(disp ** 2, axis=1))))
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -357,52 +460,115 @@ def plot_orient_cc(cc_wt, cc_mut, mode_idx, resnums, mutation_pos,
 def plot_porcupine(coords_wt, coords_mut, disp_wt, disp_mut,
                    mode_idx, resnums, mutation_pos,
                    mutation_label, out_dir, tag):
-    """3D porcupine plots for an ANM mode (WT and MUT)."""
+    """3D porcupine plots for an ANM mode (WT and MUT).
+
+    Displacements are normalised to unit RMS, then scaled uniformly for
+    visual clarity.  WT and MUT use a shared colour scale.
+    """
     from mpl_toolkits.mplot3d import Axes3D  # noqa: F401  – registers projection
 
     site_idx = int(np.argmin(np.abs(resnums - mutation_pos)))
 
-    for state_lbl, coords, disp in [("WT", coords_wt, disp_wt),
-                                     (mutation_label, coords_mut, disp_mut)]:
-        state_tag = "wt" if state_lbl == "WT" else "mut"
-        mag = np.linalg.norm(disp, axis=1)
-        max_mag = np.percentile(mag, 98) if mag.max() > 0 else 1.0
-        # Scale arrows for visibility (target ~15 Å for top displacement)
-        scale = 15.0 / max_mag if max_mag > 0 else 1.0
+    # Normalise each to unit RMS displacement
+    rms_wt = rms_displacement(disp_wt)
+    rms_mt = rms_displacement(disp_mut)
+    d_wt = disp_wt / rms_wt if rms_wt > 0 else disp_wt
+    d_mt = disp_mut / rms_mt if rms_mt > 0 else disp_mut
 
-        # Colour by magnitude
-        norm_mag = mag / max_mag if max_mag > 0 else mag
+    ARROW_SCALE = 12.0  # target max arrow length in Å
+    d_wt_sc = d_wt * ARROW_SCALE
+    d_mt_sc = d_mt * ARROW_SCALE
 
-        # ── Full-protein view ──
-        fig = plt.figure(figsize=(10, 8))
-        ax = fig.add_subplot(111, projection="3d")
+    # Shared colour scale from both
+    all_mag = np.concatenate([np.linalg.norm(d_wt_sc, axis=1),
+                               np.linalg.norm(d_mt_sc, axis=1)])
+    vmax = np.percentile(all_mag, 98) if all_mag.max() > 0 else 1.0
+    cmap = plt.cm.YlOrRd
+    cnorm = Normalize(vmin=0, vmax=vmax)
+
+    # ── Side-by-side figure ──
+    fig = plt.figure(figsize=(22, 10))
+    fig.suptitle(
+        f"ANM Internal Mode {mode_idx + 1} — Porcupine  [{tag}]",
+        fontweight="bold", fontsize=12, y=0.98,
+    )
+
+    for panel_idx, (state_lbl, coords, disp_sc) in enumerate([
+        ("WT", coords_wt, d_wt_sc),
+        (mutation_label, coords_mut, d_mt_sc),
+    ]):
+        ax = fig.add_subplot(1, 2, panel_idx + 1, projection="3d")
+        mag = np.linalg.norm(disp_sc, axis=1)
+        max_mag = mag.max() if mag.max() > 0 else 1.0
+        norm_mag = mag / vmax
 
         # Backbone trace
         ax.plot(coords[:, 0], coords[:, 1], coords[:, 2],
                 color="grey", lw=0.3, alpha=0.3)
 
-        # Sub-sample arrows for readability (≤ ~600 arrows)
-        step = max(1, len(resnums) // 600)
-        indices = list(range(0, len(resnums), step))
-        if site_idx not in indices:
-            indices.append(site_idx)
-        # Also include residues with large displacement
-        big = set(np.where(norm_mag > 0.6)[0])
-        indices = sorted(set(indices) | big)
+        # Sub-sample arrows
+        step = max(1, len(resnums) // 400)
+        indices = set(range(0, len(resnums), step))
+        indices.add(site_idx)
+        indices.update(np.where(norm_mag > 0.55)[0])
+        indices = sorted(indices)
 
         for idx in indices:
-            c = plt.cm.YlOrRd(norm_mag[idx])
+            c = cmap(cnorm(mag[idx]))
             ax.quiver(coords[idx, 0], coords[idx, 1], coords[idx, 2],
-                      disp[idx, 0] * scale, disp[idx, 1] * scale,
-                      disp[idx, 2] * scale,
-                      color=c, arrow_length_ratio=0.15, linewidth=0.6)
+                      disp_sc[idx, 0], disp_sc[idx, 1], disp_sc[idx, 2],
+                      color=c, arrow_length_ratio=0.15, linewidth=0.7)
 
-        # Mutation site sphere
         ax.scatter(*coords[site_idx], color=C_SITE, s=80, zorder=10,
                    edgecolors="black", linewidth=1, label=f"Site {mutation_pos}")
+        ax.set_title(f"{state_lbl}", fontweight="bold", fontsize=10)
+        ax.set_xlabel("X (Å)", fontsize=8)
+        ax.set_ylabel("Y (Å)", fontsize=8)
+        ax.set_zlabel("Z (Å)", fontsize=8)
+        ax.legend(fontsize=8)
+        for pane in (ax.xaxis.pane, ax.yaxis.pane, ax.zaxis.pane):
+            pane.fill = False
 
-        ax.set_title(f"ANM Mode {mode_idx + 1} Porcupine — {state_lbl}  [{tag}]",
-                     fontweight="bold", fontsize=10)
+    # Shared colourbar
+    sm = plt.cm.ScalarMappable(cmap=cmap, norm=cnorm)
+    sm.set_array([])
+    cbar = fig.colorbar(sm, ax=fig.axes, shrink=0.5, aspect=25, pad=0.02)
+    cbar.set_label("Displacement magnitude (Å, normalised)", fontsize=9)
+
+    _save(fig, out_dir,
+          f"anm_mode{mode_idx + 1}_porcupine_sidebyside_{tag}")
+
+    # ── Zoomed view (25 Å radius around mutation site) ──
+    ZOOM_R = 25.0
+    for panel_idx, (state_lbl, coords, disp_sc) in enumerate([
+        ("WT", coords_wt, d_wt_sc),
+        (mutation_label, coords_mut, d_mt_sc),
+    ]):
+        state_tag = "wt" if state_lbl == "WT" else "mut"
+        dists = np.linalg.norm(coords - coords[site_idx], axis=1)
+        zoom_mask = dists < ZOOM_R
+        if zoom_mask.sum() < 5:
+            continue
+        zoom_idx = np.where(zoom_mask)[0]
+        mag = np.linalg.norm(disp_sc, axis=1)
+
+        fig = plt.figure(figsize=(10, 8))
+        ax = fig.add_subplot(111, projection="3d")
+        ax.plot(coords[zoom_mask, 0], coords[zoom_mask, 1],
+                coords[zoom_mask, 2], color="grey", lw=0.5, alpha=0.4)
+        for idx in zoom_idx:
+            c = cmap(cnorm(mag[idx]))
+            ax.quiver(coords[idx, 0], coords[idx, 1], coords[idx, 2],
+                      disp_sc[idx, 0], disp_sc[idx, 1], disp_sc[idx, 2],
+                      color=c, arrow_length_ratio=0.15, linewidth=0.8)
+        ax.scatter(*coords[site_idx], color=C_SITE, s=100, zorder=10,
+                   edgecolors="black", linewidth=1.2,
+                   label=f"Site {mutation_pos}")
+        ax.set_title(
+            f"ANM Mode {mode_idx + 1} Porcupine Zoom ({ZOOM_R:.0f} Å) — "
+            f"{state_lbl}  [{tag}]",
+            fontweight="bold", fontsize=10,
+        )
         ax.set_xlabel("X (Å)", fontsize=8)
         ax.set_ylabel("Y (Å)", fontsize=8)
         ax.set_zlabel("Z (Å)", fontsize=8)
@@ -410,41 +576,7 @@ def plot_porcupine(coords_wt, coords_mut, disp_wt, disp_mut,
         for pane in (ax.xaxis.pane, ax.yaxis.pane, ax.zaxis.pane):
             pane.fill = False
         _save(fig, out_dir,
-              f"anm_mode{mode_idx + 1}_porcupine_{state_tag}_{tag}")
-
-        # ── Zoomed view (25 Å radius around mutation site) ──
-        ZOOM_R = 25.0
-        dists = np.linalg.norm(coords - coords[site_idx], axis=1)
-        zoom_mask = dists < ZOOM_R
-        if zoom_mask.sum() > 5:
-            zoom_idx = np.where(zoom_mask)[0]
-            fig = plt.figure(figsize=(10, 8))
-            ax = fig.add_subplot(111, projection="3d")
-            ax.plot(coords[zoom_mask, 0], coords[zoom_mask, 1],
-                    coords[zoom_mask, 2],
-                    color="grey", lw=0.5, alpha=0.4)
-            for idx in zoom_idx:
-                c = plt.cm.YlOrRd(norm_mag[idx])
-                ax.quiver(coords[idx, 0], coords[idx, 1], coords[idx, 2],
-                          disp[idx, 0] * scale, disp[idx, 1] * scale,
-                          disp[idx, 2] * scale,
-                          color=c, arrow_length_ratio=0.15, linewidth=0.8)
-            ax.scatter(*coords[site_idx], color=C_SITE, s=100, zorder=10,
-                       edgecolors="black", linewidth=1.2,
-                       label=f"Site {mutation_pos}")
-            ax.set_title(
-                f"ANM Mode {mode_idx + 1} Porcupine Zoom ({ZOOM_R:.0f} Å) — "
-                f"{state_lbl}  [{tag}]",
-                fontweight="bold", fontsize=10,
-            )
-            ax.set_xlabel("X (Å)", fontsize=8)
-            ax.set_ylabel("Y (Å)", fontsize=8)
-            ax.set_zlabel("Z (Å)", fontsize=8)
-            ax.legend(fontsize=8)
-            for pane in (ax.xaxis.pane, ax.yaxis.pane, ax.zaxis.pane):
-                pane.fill = False
-            _save(fig, out_dir,
-                  f"anm_mode{mode_idx + 1}_porcupine_zoom_{state_tag}_{tag}")
+              f"anm_mode{mode_idx + 1}_porcupine_zoom_{state_tag}_{tag}")
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -513,7 +645,14 @@ def run_mode_exploration(
     morph_frames: int = 20,
     morph_amplitude: float = 3.0,
 ) -> dict:
-    """Deep per-mode exploration for GNM and ANM (separately)."""
+    """Deep per-mode exploration for GNM and ANM.
+
+    ANM now:
+      • detects and removes rigid-body modes (eigenvalue gap analysis)
+      • matches WT↔MUT internal modes by absolute cosine overlap
+      • normalises displacements to unit RMS before porcupine rendering
+      • computes collectivity (κ) and hinge residues per mode
+    """
 
     import prody
 
@@ -555,31 +694,77 @@ def run_mode_exploration(
         resnums = wt_data["resnums"]
         site_idx = int(np.argmin(np.abs(resnums - mutation_pos)))
 
-        # Rank modes
-        wt_ranks = rank_modes(wt_data["eigenvalues"], wt_data["eigenvectors"],
-                              site_idx, is_anm)
-        mut_ranks = rank_modes(mut_data["eigenvalues"], mut_data["eigenvectors"],
-                               site_idx, is_anm)
+        # ── Rigid-body detection (ANM) ──
+        if is_anm:
+            n_rigid_wt = detect_rigid_body_modes(wt_data["eigenvalues"])
+            n_rigid_mt = detect_rigid_body_modes(mut_data["eigenvalues"])
+            n_rigid = max(n_rigid_wt, n_rigid_mt)
+            print(f"  Rigid-body modes detected: WT={n_rigid_wt}, "
+                  f"MUT={n_rigid_mt} → skipping first {n_rigid}")
+
+            # Extract internal modes only
+            wt_int = extract_internal_modes(wt_data, n_skip=n_rigid,
+                                            n_keep=n_modes, is_anm=True)
+            mut_int = extract_internal_modes(mut_data, n_skip=n_rigid,
+                                             n_keep=n_modes, is_anm=True)
+
+            # Match WT↔MUT internal modes by cosine overlap
+            matches = match_modes(wt_int["eigenvectors"],
+                                  mut_int["eigenvectors"],
+                                  n_match=n_top)
+            print(f"  Mode matching (top {n_top}):")
+            for iw, im, ov in matches:
+                print(f"    WT internal {iw} ↔ MUT internal {im}  "
+                      f"(overlap = {ov:.4f})")
+        else:
+            n_rigid = 0
+
+        # Rank modes (on internal modes for ANM, all modes for GNM)
+        if is_anm:
+            wt_ranks = rank_modes(wt_int["eigenvalues"],
+                                  wt_int["eigenvectors"],
+                                  site_idx, is_anm=True)
+            mut_ranks = rank_modes(mut_int["eigenvalues"],
+                                   mut_int["eigenvectors"],
+                                   site_idx, is_anm=True)
+        else:
+            wt_ranks = rank_modes(wt_data["eigenvalues"],
+                                  wt_data["eigenvectors"],
+                                  site_idx, is_anm=False)
+            mut_ranks = rank_modes(mut_data["eigenvalues"],
+                                   mut_data["eigenvectors"],
+                                   site_idx, is_anm=False)
 
         top_site = wt_ranks["top_site"][:n_top]
         top_global = wt_ranks["top_global"][:n_top]
-        all_modes = sorted(set(top_site.tolist()) | set(top_global.tolist()))
+        all_modes_idx = sorted(set(top_site.tolist()) | set(top_global.tolist()))
 
-        print(f"  Top {n_top} modes at site {mutation_pos}: "
+        prefix = "internal " if is_anm else ""
+        print(f"  Top {n_top} {prefix}modes at site {mutation_pos}: "
               f"{[m + 1 for m in top_site]}")
-        print(f"  Top {n_top} global modes: "
+        print(f"  Top {n_top} {prefix}global modes: "
               f"{[m + 1 for m in top_global]}")
-        print(f"  Exploring {len(all_modes)} unique modes: "
-              f"{[m + 1 for m in all_modes]}")
+        print(f"  Exploring {len(all_modes_idx)} unique {prefix}modes: "
+              f"{[m + 1 for m in all_modes_idx]}")
 
         # ── Mode ranking plot ──
         plot_mode_ranking(wt_ranks, mut_ranks, mutation_pos,
                           mutation_label, MODEL, model_dir)
         print(f"  ✓ Mode ranking plot saved")
 
+        # ── Build mode-match lookup for ANM ──
+        if is_anm:
+            # Map WT internal index → matched MUT internal index (+ sign info)
+            match_map = {}
+            for iw, im, ov in matches:
+                match_map[iw] = im
+        else:
+            match_map = None
+
         # ── Per-mode deep analysis ──
-        for mode_idx in all_modes:
-            m_num = mode_idx + 1
+        mode_descriptors = []
+        for mode_idx in all_modes_idx:
+            m_num = mode_idx + 1  # 1-based label (among internal modes)
             cats = []
             if mode_idx in top_site:
                 cats.append("site")
@@ -587,29 +772,38 @@ def run_mode_exploration(
                 cats.append("global")
             tag = "+".join(cats)
 
-            print(f"\n  Mode {m_num} ({tag}):")
+            print(f"\n  {'Internal m' if is_anm else 'M'}ode {m_num} ({tag}):")
+
+            # Select eigenvector data
+            if is_anm:
+                evals_wt = wt_int["eigenvalues"]
+                evecs_wt = wt_int["eigenvectors"]
+                evals_mt = mut_int["eigenvalues"]
+                evecs_mt = mut_int["eigenvectors"]
+                # Find matched MUT mode index
+                mut_idx = match_map.get(mode_idx, mode_idx)
+            else:
+                evals_wt = wt_data["eigenvalues"]
+                evecs_wt = wt_data["eigenvectors"]
+                evals_mt = mut_data["eigenvalues"]
+                evecs_mt = mut_data["eigenvectors"]
+                mut_idx = mode_idx
 
             # Per-mode MSF
             sf_wt = wt_ranks["per_mode_sf"][mode_idx]
-            sf_mut = mut_ranks["per_mode_sf"][mode_idx]
+            sf_mut = mut_ranks["per_mode_sf"][mut_idx if is_anm else mode_idx]
             plot_per_mode_msf(
                 sf_wt, sf_mut, mode_idx, resnums, mutation_pos,
                 float(wt_ranks["pct_site"][mode_idx]),
-                float(mut_ranks["pct_site"][mode_idx]),
-                float(wt_data["eigenvalues"][mode_idx]),
+                float(mut_ranks["pct_site"][mut_idx if is_anm else mode_idx]),
+                float(evals_wt[mode_idx]),
                 mutation_label, MODEL, model_dir, tag,
             )
             print(f"    ✓ MSF profile")
 
             # Orientational cross-correlation
-            cc_wt = compute_orient_cc(wt_data["eigenvectors"], mode_idx, is_anm)
-            cc_mut = compute_orient_cc(mut_data["eigenvectors"], mode_idx, is_anm)
-            # Align sign for meaningful delta
-            v_wt = wt_data["eigenvectors"][:, mode_idx]
-            v_mut = mut_data["eigenvectors"][:, mode_idx]
-            if np.dot(v_wt, v_mut) < 0:
-                # Flipping all signs → CC = outer(−v, −v) = outer(v,v), no change
-                pass
+            cc_wt = compute_orient_cc(evecs_wt, mode_idx, is_anm)
+            cc_mut = compute_orient_cc(evecs_mt, mut_idx, is_anm)
 
             plot_orient_cc(
                 cc_wt, cc_mut, mode_idx, resnums, mutation_pos,
@@ -617,14 +811,47 @@ def run_mode_exploration(
             )
             print(f"    ✓ Orientational CC maps (full + zoom)")
 
-            # Porcupine (ANM only)
+            # Porcupine + collectivity + hinges (ANM only)
             if is_anm:
-                n_res = wt_data["eigenvectors"].shape[0] // 3
-                disp_wt = wt_data["eigenvectors"][:, mode_idx].reshape(n_res, 3)
-                disp_mut = mut_data["eigenvectors"][:, mode_idx].reshape(n_res, 3)
-                if np.dot(wt_data["eigenvectors"][:, mode_idx],
-                          mut_data["eigenvectors"][:, mode_idx]) < 0:
+                disp_wt = mode_displacement(evecs_wt[:, mode_idx],
+                                            len(resnums), is_anm=True)
+                disp_mut = mode_displacement(evecs_mt[:, mut_idx],
+                                             len(resnums), is_anm=True)
+                # Sign-align MUT to WT
+                flat_wt = evecs_wt[:, mode_idx]
+                flat_mt = evecs_mt[:, mut_idx]
+                if np.dot(flat_wt, flat_mt) < 0:
                     disp_mut = -disp_mut
+
+                # Collectivity
+                kappa_wt = calc_collectivity(disp_wt)
+                kappa_mut = calc_collectivity(disp_mut)
+
+                # Hinge residues
+                hinges_wt = find_hinge_residues(disp_wt, resnums,
+                                                threshold_frac=0.15)
+                hinges_mut = find_hinge_residues(disp_mut, resnums,
+                                                 threshold_frac=0.15)
+
+                print(f"    Collectivity: WT κ={kappa_wt:.3f}, "
+                      f"MUT κ={kappa_mut:.3f}")
+                print(f"    Hinge residues: WT={len(hinges_wt)}, "
+                      f"MUT={len(hinges_mut)}")
+
+                mode_descriptors.append({
+                    "internal_mode": int(m_num),
+                    "wt_mode_idx": int(mode_idx),
+                    "mut_mode_idx": int(mut_idx),
+                    "overlap": float(matches[mode_idx][2])
+                    if mode_idx < len(matches) else None,
+                    "collectivity_wt": float(kappa_wt),
+                    "collectivity_mut": float(kappa_mut),
+                    "n_hinges_wt": len(hinges_wt),
+                    "n_hinges_mut": len(hinges_mut),
+                    "eigenvalue_wt": float(evals_wt[mode_idx]),
+                    "eigenvalue_mut": float(evals_mt[mut_idx]),
+                    "tag": tag,
+                })
 
                 try:
                     plot_porcupine(
@@ -633,20 +860,20 @@ def run_mode_exploration(
                         mode_idx, resnums, mutation_pos,
                         mutation_label, model_dir, tag,
                     )
-                    print(f"    ✓ Porcupine plots (full + zoom, WT + MUT)")
+                    print(f"    ✓ Porcupine plots (side-by-side + zoom)")
                 except Exception as exc:
                     print(f"    ⚠ Porcupine plot failed: {exc}")
 
                 # Structural morphing PDBs
                 write_morph_pdb(
                     wt_data["coords"], disp_wt, resnums,
-                    float(wt_data["eigenvalues"][mode_idx]), mode_idx,
+                    float(evals_wt[mode_idx]), mode_idx,
                     model_dir / f"mode{m_num}_morph_wt_{tag}.pdb",
                     morph_frames, morph_amplitude, resnames_wt,
                 )
                 write_morph_pdb(
                     mut_data["coords"], disp_mut, mut_data["resnums"],
-                    float(mut_data["eigenvalues"][mode_idx]), mode_idx,
+                    float(evals_mt[mut_idx]), mut_idx,
                     model_dir / f"mode{m_num}_morph_mut_{tag}.pdb",
                     morph_frames, morph_amplitude, resnames_mut,
                 )
@@ -660,13 +887,13 @@ def run_mode_exploration(
                     disp_mut = -disp_mut
                 write_morph_pdb(
                     wt_data["coords"], disp_wt, resnums,
-                    float(wt_data["eigenvalues"][mode_idx]), mode_idx,
+                    float(evals_wt[mode_idx]), mode_idx,
                     model_dir / f"mode{m_num}_morph_wt_{tag}.pdb",
                     morph_frames, morph_amplitude, resnames_wt,
                 )
                 write_morph_pdb(
                     mut_data["coords"], disp_mut, mut_data["resnums"],
-                    float(mut_data["eigenvalues"][mode_idx]), mode_idx,
+                    float(evals_mt[mode_idx]), mode_idx,
                     model_dir / f"mode{m_num}_morph_mut_{tag}.pdb",
                     morph_frames, morph_amplitude, resnames_mut,
                 )
@@ -674,8 +901,8 @@ def run_mode_exploration(
 
         # Save model summary
         model_summary = {
-            "n_modes_analyzed": len(all_modes),
-            "modes_analyzed": [int(m + 1) for m in all_modes],
+            "n_modes_analyzed": len(all_modes_idx),
+            "modes_analyzed": [int(m + 1) for m in all_modes_idx],
             "top_site_modes": [int(m + 1) for m in top_site],
             "top_global_modes": [int(m + 1) for m in top_global],
             "pct_global_wt": wt_ranks["pct_global"].tolist(),
@@ -683,6 +910,14 @@ def run_mode_exploration(
             "pct_site_wt": wt_ranks["pct_site"].tolist(),
             "pct_site_mut": mut_ranks["pct_site"].tolist(),
         }
+        if is_anm:
+            model_summary["n_rigid_body_modes"] = int(n_rigid)
+            model_summary["mode_matching"] = [
+                {"wt_internal": int(iw), "mut_internal": int(im),
+                 "overlap": float(ov)}
+                for iw, im, ov in matches
+            ]
+            model_summary["mode_descriptors"] = mode_descriptors
         summary[model] = model_summary
 
     with open(out_dir / "exploration_summary.json", "w") as f:
